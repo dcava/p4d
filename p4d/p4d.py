@@ -330,7 +330,8 @@ class py4d_cursor(object):
         columncount = self.lib4d_sql.fourd_num_columns(self.result)
 
         description = []
-        pythonTypes = {self.lib4d_sql.VK_BOOLEAN: bool,
+        pythonTypes = {self.lib4d_sql.VK_UNKNOW: str,
+                       self.lib4d_sql.VK_BOOLEAN: bool,
                        self.lib4d_sql.VK_BYTE: str,
                        self.lib4d_sql.VK_WORD: str,
                        self.lib4d_sql.VK_LONG: int,
