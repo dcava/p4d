@@ -60,7 +60,9 @@ FOURD_TYPE typeFromString(const char *type)
 	if(strcmp(type,"VK_STRING")==0)
 		return VK_STRING;     
 	if(strcmp(type,"VK_BLOB")==0)
-		return VK_BLOB;       
+		return VK_BLOB;
+	if(strcmp(type,"VK_BLOB_OBJ")==0)
+		return VK_BLOB;
 	if(strcmp(type,"VK_IMAGE")==0)
 		return VK_IMAGE;      
 	return VK_UNKNOW;

@@ -418,10 +418,12 @@ class py4d_cursor(object):
 
             conver_res = self.lib4d_sql.fourd_field_to_string(self.result, col, inbuff, strlen)
             strdata = inbuff[0]
-            output = ffi.buffer(strdata, strlen[0])[:]
-            if strdata != ffi.NULL and conver_res == 1:
-                self.lib4d_sql.free(strdata)  #must call free explicitly, otherwise we leak.
+            if conver_res == 1 and strdata != ffi.NULL:
+                output = ffi.buffer(strdata, strlen[0])[:]
+                self.lib4d_sql.free(strdata)
                 strdata = ffi.NULL
+            else:
+                output = b''
 
             if fieldtype==self.lib4d_sql.VK_STRING or fieldtype==self.lib4d_sql.VK_TEXT:
                 decoded_value = output.decode('UTF-16LE', errors="replace")
@@ -440,25 +442,27 @@ class py4d_cursor(object):
                     row.append(None)  #Empty output=null
                 row.append(float(output))
             elif fieldtype == self.lib4d_sql.VK_TIMESTAMP:
-                if output == '0000/00/00 00:00:00.000':
-                    dateval = None
-                else:
-                    try:
-                        dateval = datetime(int(output[:4]), int(output[5:7]),
-                                           int(output[8:10]), int(output[11:13]),
-                                           int(output[14:16]), int(output[17:19]),
-                                           int(output[20:23])*1000)
-                        #dateval = parser.parse(output)
-                    except:
+                try:
+                    s = output.decode('ascii')
+                    if s == '0000/00/00 00:00:00.000':
                         dateval = None
+                    else:
+                        dateval = datetime(int(s[:4]), int(s[5:7]),
+                                           int(s[8:10]), int(s[11:13]),
+                                           int(s[14:16]), int(s[17:19]),
+                                           int(s[20:23])*1000)
+                except Exception:
+                    dateval = None
                 row.append(dateval)
             elif fieldtype == self.lib4d_sql.VK_DURATION:
-                #milliseconds from midnight
                 longval = self.lib4d_sql.fourd_field_long(self.result, col)
-                durationval = timedelta(milliseconds=longval[0])
-                midnight = datetime(1, 1, 1)  #we are going to ignore the date anyway
-                timeval = midnight + durationval
-                row.append(timeval.time())
+                try:
+                    durationval = timedelta(milliseconds=longval[0])
+                    midnight = datetime(1, 1, 1)
+                    timeval = midnight + durationval
+                    row.append(timeval.time())
+                except (OverflowError, ValueError):
+                    row.append(None)
             elif fieldtype == self.lib4d_sql.VK_BLOB or fieldtype == self.lib4d_sql.VK_IMAGE:
                 field = self.lib4d_sql.fourd_field(self.result, col)
                 if field != ffi.NULL:
