@@ -1,11 +1,9 @@
-import os, sys, binascii
-from cffi import FFI
-from cffi.verifier import Verifier
+import os
 from dateutil import parser
 from datetime import datetime, timedelta, time, date
 from collections import defaultdict
 import time as timemod
-import threading, glob, re
+import re
 import contextlib
 
 
@@ -36,78 +34,7 @@ except NameError:
 ########################################################################
 ## FFI Initilization
 ########################################################################
-#----------------------------------------------------------------------
-def _create_modulename(cdef_sources, source, sys_version):
-    """
-    This is the same as CFFI's create modulename except we don't include the
-    CFFI version.
-
-    Thanks to https://caremad.io/2014/11/distributing-a-cffi-project/ for this
-    code.
-    """
-    key = '\x00'.join([sys_version[:3], source, cdef_sources])
-    key = key.encode('utf-8')
-    k1 = hex(binascii.crc32(key[0::2]) & 0xffffffff)
-    k1 = k1.lstrip('0x').rstrip('L')
-    k2 = hex(binascii.crc32(key[1::2]) & 0xffffffff)
-    k2 = k2.lstrip('0').rstrip('L')
-    return '_Py4d_cffi_{0}{1}'.format(k1, k2)
-
-def _compile_module(*args, **kwargs):
-    raise RuntimeError(
-        "Attempted implicit compile of a cffi module. All cffi modules should "
-        "be pre-compiled at installation time."
-    )
-
-class LazyLoadLib(object):
-    def __init__(self, ffi):
-        self._ffi = ffi
-        self._lib = None
-        self._lock = threading.Lock()
-
-    def __getattr__(self, name):
-        if self._lib is None:
-            with self._lock:
-                if self._lib is None:
-                    #change working directory for CFFI compilation
-                    _CWD = os.getcwd()
-                    _FILE_PATH = os.path.dirname(os.path.realpath(__file__))
-                    os.chdir(_FILE_PATH)
-                    os.chdir(os.pardir)
-                    self._lib = self._ffi.verifier.load_library()
-                    os.chdir(_CWD)
-
-        return getattr(self._lib, name)
-
-ffi = FFI()
-
-#change working directory for CFFI compilation
-_CWD = os.getcwd()
-_FILE_PATH = os.path.dirname(os.path.realpath(__file__))
-os.chdir(_FILE_PATH)
-os.chdir(os.pardir)
-
-#use the absolute path to load the file here so we don't have to worry about working directory issues
-_CDEF = open("{}/py_fourd.h".format(_FILE_PATH)).read()
-
-ffi.cdef(_CDEF)
-
-_SOURCE = """
-#include "fourd.h"
-"""
-
-source_files = glob.glob('lib4d_sql/*.c')
-
-ffi.verifier = Verifier(ffi, _SOURCE,
-                       modulename=_create_modulename(_CDEF, _SOURCE, sys.version),
-                       sources=source_files,
-                       include_dirs=['lib4d_sql', 'py4d/lib4d_sql'])
-
-#ffi.verifier.compile_module = _compile_module
-#ffi.verifier._compile_module = _compile_module
-
-lib4d_sql = LazyLoadLib(ffi)
-os.chdir(_CWD)
+from ._p4d_cffi import ffi, lib as lib4d_sql
 
 ########################################################################
 
@@ -210,7 +137,7 @@ class py4d_cursor(object):
 
         self.fourdconn = fourdconn
         self.connection = connection
-        self.lib4d_sql = lib4d._lib  #so we can address it directly
+        self.lib4d_sql = lib4d
 
     #----------------------------------------------------------------------
     def close(self):
