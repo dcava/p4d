@@ -562,7 +562,7 @@ class py4d_cursor(object):
         resultset = []
         for i in range(size):
             row = self.fetchone()
-            if row is none:
+            if row is None:
                 break
             resultset.append(row)
 
