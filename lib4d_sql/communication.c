@@ -591,10 +591,9 @@ int socket_connect_timeout(FOURD *cnx,const char *host,unsigned int port,int tim
 			return 1;
         } 
      } 
-     else { 
-        /*fprintf(stderr, "Error connecting %d - %s\n", errno, strerror(errno)); */
+     else {
         cnx->error_code=-WSAGetLastError();
-			strncpy_s(cnx->error_string,2048,"Error connecting",2048);
+        snprintf(cnx->error_string, 2048, "Error connecting: %s", strerror(WSAGetLastError()));
 			freeaddrinfo(result);
 			closesocket(cnx->socket);
 			cnx->socket = INVALID_SOCKET;
