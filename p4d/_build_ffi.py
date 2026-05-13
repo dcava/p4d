@@ -28,4 +28,4 @@ ffi.set_source(
 )
 
 if __name__ == '__main__':
-    ffi.compile(verbose=True)
+    ffi.compile(tmpdir='build', verbose=True)

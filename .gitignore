@@ -13,3 +13,9 @@ dist
 virtualenv
 env
 .eggs
+build/
+Users/
+*.o
+*.so
+p4d/_p4d_cffi.c
+p4d/_p4d_cffi*.so
