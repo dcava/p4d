@@ -428,7 +428,7 @@ int socket_receiv_data(FOURD *cnx,FOURD_RESULT *state)
 							pElmt->null=1;
 						}else{
 							blob->length=data_length;
-							blob->data=calloc(data_length,1);
+							blob->data=malloc(data_length);
 							iResult = frecv(cnx->socket,blob->data,data_length, 0);
 							len+=iResult;
 						}

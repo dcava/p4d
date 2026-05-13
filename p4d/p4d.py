@@ -167,7 +167,7 @@ class py4d_cursor(object):
 
 
     #----------------------------------------------------------------------
-    def execute(self, query, params=[], describe=True):
+    def execute(self, query, params=[], describe=True, pagesize=None):
         """Prepare and execute a database operation"""
         if self.connection.connected == False:
             raise InternalError("Database not connected")
@@ -302,7 +302,8 @@ class py4d_cursor(object):
             self.lib4d_sql.fourd_free_result(self.result)
 
         # Run the query and return the results
-        self.result = self.lib4d_sql.fourd_exec_statement(self.fourd_query, self.pagesize)
+        _pagesize = pagesize if pagesize is not None else self.pagesize
+        self.result = self.lib4d_sql.fourd_exec_statement(self.fourd_query, _pagesize)
 
         if self.result == ffi.NULL:
             raise ProgrammingError(ffi.string(self.lib4d_sql.fourd_error(self.fourdconn)))

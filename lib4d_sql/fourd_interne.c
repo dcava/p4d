@@ -367,7 +367,13 @@ int _fetch_result(FOURD_RESULT *res,unsigned short int id_cmd)
 	res->elmt=nRes->elmt;
 	nRes->elmt=last_data;	/*important for free memory after */
 	res->first_row=first_row;
-	res->row_count_sent=last_row-first_row+1;
+	/* swap row_count_sent so _free_data_result(nRes) frees the old elmt with
+	   the correct row count, not the count of rows just received */
+	{
+		unsigned int old_sent=res->row_count_sent;
+		res->row_count_sent=nRes->row_count_sent;
+		nRes->row_count_sent=old_sent;
+	}
 	res->error_code=nRes->error_code;
 	sprintf_s(res->error_string,sizeof(res->error_string),"%s",nRes->error_string);
 	res->status=nRes->status;
