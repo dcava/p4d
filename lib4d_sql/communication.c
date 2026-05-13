@@ -416,25 +416,36 @@ int socket_receiv_data(FOURD *cnx,FOURD_RESULT *state)
 					{
 						int data_length=0;
 						FOURD_BLOB *blob;
-						//read negative value of length of string
 						blob=calloc(1,sizeof(FOURD_BLOB));
 						pElmt->pValue=blob;
 						iResult = frecv(cnx->socket,(unsigned char*)&data_length,4, 0);
 						Printf("Blob length: %08X\n",data_length);
 						len+=iResult;
+						if(data_length < 0){
+							Printferr("Malformed BLOB length %d at row %d column %d\n",data_length,(elmts_offset-c+1)/nbCol+1,c+1);
+							free(colType);
+							state->error_code=-1;
+							sprintf_s(state->error_string,2048,"Malformed BLOB length received",2048);
+							return 1;
+						}
 						if(data_length==0){
 							blob->length=0;
 							blob->data=NULL;
 							pElmt->null=1;
 						}else{
-							blob->length=data_length;
 							blob->data=malloc(data_length);
+							if(!blob->data){
+								Printferr("Out of memory allocating %d bytes for BLOB\n",data_length);
+								free(colType);
+								state->error_code=-1;
+								sprintf_s(state->error_string,2048,"Out of memory allocating BLOB",2048);
+								return 1;
+							}
+							blob->length=data_length;
 							iResult = frecv(cnx->socket,blob->data,data_length, 0);
 							len+=iResult;
 						}
-						//Printf("Blob: %d Bytes\n",data_length);
 					}
-						//Printferr("Blob not supported\n");
 						break;
 					default:
 						Printferr("Type not supported (%s) at row %d column %d\n",stringFromType(colType[c]),(elmts_offset-c+1)/nbCol+1,c+1);
