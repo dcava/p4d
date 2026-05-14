@@ -8,6 +8,15 @@ This is an actively maintained fork of [ibrewster/p4d](https://github.com/ibrews
 
 ---
 
+## You probably don't want to use this....
+
+This library facilitates access to a 4D database via the exposed SQL backend. 4D speaks am SQL dialect that is not well documented. I updated this fork to support BLOBs which are new since the lib_4dsql library was first released by 4D. Since that time, 4D have discontinued ODBC drivers for MacOS (last v18) and Windows (v20). Windows ODBC drivers do continue to work with 4Dv21 and that pathway should be strongly prefered over this library. If you don't have a Windows PC or a working ODBC driver, then p4d will get the job done.
+
+Please don't write anything important that relies on this library.
+
+---
+
+
 ## Installation
 
 **From GitHub (recommended):**
