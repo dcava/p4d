@@ -45,11 +45,10 @@ long frecv(SOCKET s,unsigned char *buf,int len,int flags)
 	long iResult=0;
 	do{
 		iResult=recv(s,buf+rec,len-rec, 0);
-		if(iResult<0){
-			return iResult;
-		}else {
-			rec+=iResult;
+		if(iResult<=0){
+			return (iResult==0) ? -1 : iResult;
 		}
+		rec+=iResult;
 	}while(rec<len);
 	return rec;
 }
@@ -191,47 +190,41 @@ int socket_send_data(FOURD *cnx,const char*msg,int len)
 int socket_receiv_header(FOURD *cnx,FOURD_RESULT *state)
 {
 	long iResult=0;
-	int offset=0;
 	int len=0;
 	int crlf=0;
 	int grow_size=1024; //1K
 	int new_size=grow_size;
+	int search_start=0;
+	char *hend=NULL;
 	
 	//allocate some space to start with
 	state->header=calloc(sizeof(char),new_size);
 	
-	//read the HEADER only
-	do 
+	//read the HEADER, buffered in chunks
+	while (!crlf)
 	{
-		offset+=iResult;
-		iResult = recv(cnx->socket,state->header+offset,1, 0);
-		len+=iResult;
-		if(len>new_size-5){
+		if (len >= new_size - grow_size) {
 			//header storage nearly full. Allocate more.
-			new_size=new_size+sizeof(char)*grow_size;
+			new_size += grow_size;
 			state->header=realloc(state->header,new_size);
 		}
-		if(len>3)
-		{
-			if(state->header[offset-3]=='\r'
-			 &&state->header[offset-2]=='\n'
-			 &&state->header[offset-1]=='\r'
-			 &&state->header[offset  ]=='\n')
-			 crlf=1;
+		iResult = recv(cnx->socket,state->header+len,new_size-len-1, 0);
+		if (iResult <= 0) {
+			Printf("Error: recv failed or connection closed (%ld)\n", iResult);
+			return 1;
 		}
-
-	}while(iResult>0 && !crlf);
-	if(!crlf)
-	{
-		Printf("Error: Header-end not found\n");
-		return 1;
+		len += iResult;
+		state->header[len]=0;
+		
+		// scan for \r\n\r\n terminator only in new data
+		hend = strstr(state->header+search_start, "\r\n\r\n");
+		if (hend != NULL) crlf=1;
+		search_start = (len > 4) ? len-4 : 0;
 	}
+	
 	state->header[len]=0;
 	state->header_size=len;
 	Printf("Receiv:\n%s",state->header);
-	//there we must add reading data
-	//before analyse header 
-	//see COLUMN-TYPES section
 	return 0;
 }
 int socket_receiv_data(FOURD *cnx,FOURD_RESULT *state)
@@ -370,8 +363,18 @@ int socket_receiv_data(FOURD *cnx,FOURD_RESULT *state)
 						len+=iResult;
 						iResult = frecv(cnx->socket,(unsigned char*)&(tmp->data_length),sizeof(int), 0);
 						len+=iResult;
-						iResult = frecv(cnx->socket,(tmp->data),tmp->data_length, 0);
-						len+=iResult;
+						if (tmp->data_length > 0) {
+							tmp->data = malloc(tmp->data_length);
+							if (tmp->data == NULL) {
+								Printferr("Out of memory allocating FLOAT data\n");
+								free(colType);
+								state->error_code=-1;
+								sprintf_s(state->error_string,2048,"Out of memory allocating FLOAT",2048);
+								return 1;
+							}
+							iResult = frecv(cnx->socket,(tmp->data),tmp->data_length, 0);
+							len+=iResult;
+						}
 						
 						Printferr("Float not supported\n");
 					}

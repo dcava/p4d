@@ -26,8 +26,8 @@
   |          Alexandre Morgaut <php@4d.fr>                               |
   +----------------------------------------------------------------------+
 */
-#ifndef __FOURD_INT__
-#define __FOURD_INT__ 1
+#ifndef FOURD_INT_H
+#define FOURD_INT_H
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -87,7 +87,7 @@ void PrintData(const void *data,unsigned int size);
 #ifndef WIN32
 	void ZeroMemory (void *s, size_t n);
 #define WSAGetLastError() errno
-#define strtok_s(a,b,c) strtok(a,b)
+#define strtok_s(a,b,c) strtok_r(a,b,c)
 #define strcpy_s(s,size,cs) strncpy(s,cs,size)
 #define strncpy_s(s,ms,cs,size) strncpy(s,cs,size)
 	int sprintf_s(char *buff,size_t size,const char* format,...);

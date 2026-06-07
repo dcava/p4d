@@ -34,30 +34,13 @@
 #include <stdarg.h>
 #define __STATEMENT_BASE64__ 1
 #define __LOGIN_BASE64__ 1
-int Printf(const char* format,...)
-{
 #if VERBOSE
-	va_list ap;
-	va_start(ap,format);
-	vprintf(format,ap);
-	
-	return 0;
+#define Printf(...) printf(__VA_ARGS__)
+#define Printferr(...) fprintf(stderr, __VA_ARGS__)
 #else
-	return 0;
+#define Printf(...) ((void)0)
+#define Printferr(...) ((void)0)
 #endif
-}
-int Printferr(const char* format,...)
-{
-#if VERBOSE
-	va_list ap;
-	va_start(ap,format);
-	vfprintf(stderr,format,ap);
-	
-	return 0;
-#else
-	return 0;
-#endif
-}
 #ifndef WIN32
 void ZeroMemory (void *s, size_t n)
 {
@@ -67,15 +50,20 @@ int sprintf_s(char *buff,size_t size,const char* format,...)
 {
 	va_list ap;
 	va_start(ap,format);
-	vsnprintf(buff,size,format,ap);
-	return 0;
+	int ret = vsnprintf(buff,size,format,ap);
+	va_end(ap);
+	if (size > 0 && (size_t)ret >= size) buff[size-1] = '\0';
+	return ret;
 }
 int _snprintf_s(char *buff, size_t size, size_t count, const char *format,...)
 {
 	va_list ap;
 	va_start(ap,format);
-	vsnprintf(buff,((size>count)?count:size),format,ap);
-	return 0;
+	size_t n = (size > count) ? count : size;
+	int ret = vsnprintf(buff,n,format,ap);
+	va_end(ap);
+	if (n > 0 && (size_t)ret >= n) buff[n-1] = '\0';
+	return ret;
 }
 int _snprintf(char *buff, int size, const char *format,...)
 {
@@ -102,9 +90,11 @@ int dblogin(FOURD *cnx,unsigned short int id_cnx,const char *user,const char*pwd
 	sprintf_s(msg,2048,"%03d LOGIN \r\nUSER-NAME:%s\r\nUSER-PASSWORD:%s\r\nPREFERRED-IMAGE-TYPES:%s\r\nREPLY-WITH-BASE64-TEXT:Y\r\nPROTOCOL-VERSION:0.1a\r\n\r\n",id_cnx,user,pwd,image_type);
 #endif
 	socket_send(cnx,msg);
-	if(receiv_check(cnx,&state)!=0)
+	if(receiv_check(cnx,&state)!=0) {
+		Free(state.header);
 		return 1;
-		
+	}
+	Free(state.header);
 	return 0;
 }
 //return 0 if ok 1 if error
@@ -165,6 +155,7 @@ int _query(FOURD *cnx,unsigned short int id_cmd,const char *request,FOURD_RESULT
 	//if(traite_header_reponse(cnx)!=0)
 	//	return 1;
 	if(result==NULL) {
+		Free(res->header);
 		Free(res);
 	}
 	Printf("---Fin de _query\n");
@@ -312,8 +303,10 @@ int _query_param(FOURD *cnx,unsigned short int id_cmd, const char *request,unsig
 	}
 	//if(traite_header_reponse(cnx)!=0)
 	//	return 1;
-	if(result==NULL)
+	if(result==NULL) {
+		Free(res->header);
 		Free(res);
+	}
 	return 0;
 }
 
@@ -399,8 +392,10 @@ int close_statement(FOURD_RESULT *res,unsigned short int id_cmd)
 	sprintf_s(msg,2048,"%03d CLOSE-STATEMENT\r\nSTATEMENT-ID:%d\r\n\r\n",id_cmd,res->id_statement);
 	socket_send(cnx,msg);
 	if(receiv_check(cnx,&state)!=0) {
+		Free(state.header);
 		return 1;
 	}
+	Free(state.header);
 	return 0;
 }
 //return 0 if ok 1 if error
@@ -412,8 +407,10 @@ int dblogout(FOURD *cnx,unsigned short int id_cmd)
 	sprintf_s(msg,2048,"%03d LOGOUT\r\n\r\n",id_cmd);
 	socket_send(cnx,msg);
 	if(receiv_check(cnx,&state)!=0) {
+		Free(state.header);
 		return 1;
 	}
+	Free(state.header);
 	return 0;
 }
 int quit(FOURD *cnx,unsigned short int id_cmd)
@@ -424,8 +421,10 @@ int quit(FOURD *cnx,unsigned short int id_cmd)
 	sprintf_s(msg,2048,"%03d QUIT\r\n\r\n",id_cmd);
 	socket_send(cnx,msg);
 	if(receiv_check(cnx,&state)!=0) {
+		Free(state.header);
 		return 1;
 	}
+	Free(state.header);
 	return 0;
 }
 int get(const char* msg,const char* section,char *valeur,int max_length)
@@ -464,9 +463,11 @@ int get(const char* msg,const char* section,char *valeur,int max_length)
 		unsigned char *valeur_decode=NULL;
 		int len_dec=0;
 		valeur_decode=base64_decode(valeur,strlen(valeur),&len_dec);
-		valeur_decode[len_dec]=0;
-		strncpy_s(valeur,max_length,(const char*)valeur_decode,(size_t)len_dec);
-		valeur[len_dec]=0;
+		if (valeur_decode != NULL) {
+			valeur_decode[len_dec]=0;
+			strncpy_s(valeur,max_length,(const char*)valeur_decode,(size_t)len_dec);
+			valeur[len_dec]=0;
+		}
 		Free(valeur_decode);
 	}
 	return 0;
@@ -490,7 +491,7 @@ FOURD_LONG8 _get_status(const char *header,int *status, FOURD_LONG8 *error_code,
 		#endif
 	}
 	_snprintf_s(sStatus,50,fin-loc,"%s",loc);
-	status[fin-loc]=0;
+	sStatus[fin-loc]=0;
 	if(strcmp(sStatus,"OK")==0) {
 		//it's ok
 		*error_code=0;
@@ -565,7 +566,7 @@ int traite_header_response(FOURD_RESULT* state)
 		char column_type[2048];
 		char *column=NULL;
 		unsigned int num=0;
-		//char *context=NULL;
+		char *context=NULL;
 		if(get(header,"Column-Types",column_type,2048)==0) {
 			Printf("Column-Types => '%s'\n",column_type);
 			column = strtok_s(column_type, " ",&context);
@@ -623,7 +624,7 @@ int traite_header_response(FOURD_RESULT* state)
 		//default size of 2048 and pray it works :)
 		column_alias=calloc(sizeof(char), base64_size+5); //I always like to give a few bytes wiggle
 		
-		//char *context=NULL;
+		char *context=NULL;
 		if(get(header,"Column-Aliases-Base64",column_alias,base64_size)==0) {
 			/* delete the last espace char if exist */
 			if(column_alias[strlen(column_alias)-1]==' ') {
@@ -869,9 +870,9 @@ char *_serialize(char *data,unsigned int *size, FOURD_TYPE type, void *pObj)
 					lSize=sizeof(o->year)+sizeof(o->mounth)+sizeof(o->day)+sizeof(o->milli);
 					data=realloc(data,(*size)+lSize);
 					memcpy(data+*size,&(o->year),2);
-					memcpy(data+*size+2,&(o->year),1);
-					memcpy(data+*size+3,&(o->year),1);
-					memcpy(data+*size+4,&(o->year),4);
+					memcpy(data+*size+2,&(o->mounth),1);
+					memcpy(data+*size+3,&(o->day),1);
+					memcpy(data+*size+4,&(o->milli),4);
 					*size+=lSize;
 				}
 				break;
@@ -902,10 +903,10 @@ char *_serialize(char *data,unsigned int *size, FOURD_TYPE type, void *pObj)
 			case VK_BLOB:
 				{
 					FOURD_BLOB *o=pObj;
-					lSize=sizeof(o->length)+o->length*2;
+					lSize=4+o->length;
 					data=realloc(data,(*size)+lSize);
 					memcpy(data+*size,&(o->length),4);
-					memcpy(data+*size+4,o->data,o->length*2);
+					memcpy(data+*size+4,o->data,o->length);
 					*size+=lSize;
 				}
 				break;
@@ -947,17 +948,18 @@ void FreeBlob(FOURD_BLOB *p)
 }
 void PrintData(const void *data,unsigned int size)
 {
-	const char *d=data;
+	const unsigned char *d=data;
 	unsigned int i=0;
+	(void)d; /* used when VERBOSE is on */
 	if(size>=1)
-		Printf("0x%X",*(char *)(d+i));
+		Printf("0x%X",d[i]);
 	for(i=1;i<size;i++) {
-		Printf(" 0x%X",*(char *)(d+i));
+		Printf(" 0x%X",d[i]);
 	}
 }
 int _is_multi_query(const char *request)
 {
-	int i=0;
+	size_t i=0;
 	size_t len;
 	int inCol=0;
 	int inStr=0;

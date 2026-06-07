@@ -30,9 +30,8 @@
 #include <stdio.h>
 #include <string.h>
 
-extern int Printf(const char* format,...);
-extern int Printferr(const char* format,...);
 #include "fourd.h"
+#include "fourd_int.h"
 FOURD_TYPE typeFromString(const char *type)
 {
 	if(strcmp(type,"VK_BOOLEAN")==0)

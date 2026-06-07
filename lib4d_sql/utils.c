@@ -28,7 +28,8 @@
 */
 
 #include <string.h>
-#define isspace(x) (x==' ')
+#include <ctype.h>
+
 char *strstrip(char *s)
 {
        size_t size;
@@ -40,11 +41,11 @@ char *strstrip(char *s)
                return s;
 
        end = s + size - 1;
-       while (end != s && isspace(*end))
+       while (end != s && isspace((unsigned char)*end))
                end--;
        *(end + 1) = '\0';
 
-       while (*s && isspace(*s))
+       while (*s && isspace((unsigned char)*s))
                s++;
 
        return s;

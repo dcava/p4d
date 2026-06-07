@@ -26,15 +26,16 @@
   |          Alexandre Morgaut <php@4d.fr>                               |
   +----------------------------------------------------------------------+
 */
-#ifndef __FOURD__
-#define __FOURD__ 1
+#ifndef FOURD_H
+#define FOURD_H
+
+#include <stdint.h>
 
 #ifdef WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <Wspiapi.h>
 #else
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -50,7 +51,6 @@ typedef int SOCKET;
 typedef struct sockaddr_in SOCKADDR_IN;
 typedef struct sockaddr SOCKADDR;
 typedef struct in_addr IN_ADDR;
-
 #endif 
 
 
@@ -117,44 +117,26 @@ const char* stringFromResultType(FOURD_RESULT_TYPE type);
 /*********************/
 /* Structure of VK_* */
 /*********************/
-#ifdef WIN32
-typedef short FOURD_BOOLEAN;
-typedef short FOURD_BYTE;
-typedef short FOURD_WORD;
-typedef	int FOURD_LONG;
-typedef	__int64 FOURD_LONG8;
-typedef	double FOURD_REAL;
-typedef	struct{int exp;char sign;int data_length;void* data;}FOURD_FLOAT;
-typedef	struct{short year;char mounth;char day;unsigned int milli;}FOURD_TIMESTAMP;
-typedef	__int64 FOURD_DURATION;//in milliseconds
-typedef	struct{int length;unsigned char *data;}FOURD_STRING;
-typedef	struct{int length;void *data;}FOURD_BLOB;
-/* typedef	struct{}FOURD_IMAGE;  */
-#else
-typedef short FOURD_BOOLEAN;
-typedef short FOURD_BYTE;
-typedef short FOURD_WORD;
-typedef int FOURD_LONG;
-typedef long long FOURD_LONG8;
-typedef double FOURD_REAL;
-typedef struct{int exp;unsigned char sign;int data_length;void* data;}FOURD_FLOAT;
-typedef struct{short year;unsigned char mounth;unsigned char day;unsigned int milli;}FOURD_TIMESTAMP;
-typedef long long FOURD_DURATION;//in milliseconds
-typedef struct{int length;unsigned char *data;}FOURD_STRING;
-typedef struct{int length;void *data;}FOURD_BLOB;
-/* typedef       struct{}FOURD_IMAGE; */
-
-#endif
+typedef int16_t  FOURD_BOOLEAN;
+typedef int16_t  FOURD_BYTE;
+typedef int16_t  FOURD_WORD;
+typedef int32_t  FOURD_LONG;
+typedef int64_t  FOURD_LONG8;
+typedef double   FOURD_REAL;
+typedef int64_t  FOURD_DURATION; /* milliseconds */
+typedef struct { int32_t exp; uint8_t sign; int32_t data_length; void* data; } FOURD_FLOAT;
+typedef struct { int16_t year; uint8_t mounth; uint8_t day; uint32_t milli; } FOURD_TIMESTAMP;
+typedef struct { int32_t length; unsigned char *data; } FOURD_STRING;
+typedef struct { int32_t length; void *data; } FOURD_BLOB;
+/* typedef struct {} FOURD_IMAGE; */
 
 
 typedef struct{
-	/* Socket Win32 */
+	/* Socket */
 #ifdef WIN32
 	WSADATA wsaData;
-	SOCKET socket;
-#else
-	int socket;
 #endif
+	SOCKET socket;
 
 	int init;		/*boolean*/
 	int connected;	/*boolean*/

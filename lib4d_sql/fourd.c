@@ -38,7 +38,9 @@
 
 FOURD* fourd_init()
 {
-	//int iResult=0;
+#ifdef WIN32
+	int iResult=0;
+#endif
 	FOURD* cnx=calloc(1,sizeof(FOURD));
 
 	cnx->socket = INVALID_SOCKET;
@@ -122,7 +124,6 @@ void fourd_free(FOURD* cnx)
 
 	if (cnx!=NULL) {
 		free(cnx);
-		cnx=NULL;
 	}
 }
 
@@ -290,11 +291,18 @@ int fourd_field_to_string(FOURD_RESULT *res,unsigned int numCol,char **value,siz
 		case VK_BYTE:
 		case VK_WORD:
 		case VK_LONG:
+			{
+				*value=calloc(22,sizeof(char));
+				sprintf_s(*value,22,"%d",*((FOURD_LONG *)elmt->pValue));
+				*len=strlen(*value);
+				return 1;
+			}
+			break;
 		case VK_LONG8:
 		case VK_DURATION:
 			{
 				*value=calloc(22,sizeof(char));
-				sprintf_s(*value,22,"%d",*((FOURD_LONG *)elmt->pValue));
+				sprintf_s(*value,22,"%lld",*((FOURD_LONG8 *)elmt->pValue));
 				*len=strlen(*value);
 				return 1;
 			}
@@ -444,7 +452,9 @@ int fourd_bind_param(FOURD_STATEMENT *state,unsigned int numParam,FOURD_TYPE typ
 	/* realloc the size of memory if necessary */
 	if(numParam>=state->nbAllocElement) {
 		state->nbAllocElement=numParam+5;
-		state->elmt=realloc(state->elmt,(sizeof(FOURD_ELEMENT)*state->nbAllocElement));
+		FOURD_ELEMENT *newElmt=realloc(state->elmt,(sizeof(FOURD_ELEMENT)*state->nbAllocElement));
+		if (newElmt==NULL) return -1;
+		state->elmt=newElmt;
 	}
 	if(numParam>=state->nb_element) {
 		state->nb_element=numParam+1;	/*zero-based index */

@@ -156,7 +156,7 @@ unsigned char *base64_decode_ex(const char *str, size_t length, int *ret_length,
 	result = (unsigned char *)malloc(length + 1);
 
 	/* run through the whole string, converting as we go */
-	while ((ch = *current++) != '\0' && length-- > 0) {
+	while ((ch = (unsigned char)*current++) != '\0' && length-- > 0) {
 		if (ch == base64_pad) break;
 
 		ch = base64_reverse_table[ch];
