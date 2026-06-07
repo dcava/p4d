@@ -32,8 +32,14 @@
 #include <stdio.h>
 #include <string.h>
 
-int Printf(const char* format,...);
-int Printferr(const char* format,...);
+/* Printf / Printferr — zero-overhead when VERBOSE=0 (defined in fourd.h) */
+#if VERBOSE
+#define Printf(...)   printf(__VA_ARGS__)
+#define Printferr(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define Printf(...)   ((void)0)
+#define Printferr(...) ((void)0)
+#endif
 
 /*******************/
 /* communication.c */

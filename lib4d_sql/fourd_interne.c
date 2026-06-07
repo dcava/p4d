@@ -34,13 +34,6 @@
 #include <stdarg.h>
 #define __STATEMENT_BASE64__ 1
 #define __LOGIN_BASE64__ 1
-#if VERBOSE
-#define Printf(...) printf(__VA_ARGS__)
-#define Printferr(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define Printf(...) ((void)0)
-#define Printferr(...) ((void)0)
-#endif
 #ifndef WIN32
 void ZeroMemory (void *s, size_t n)
 {
