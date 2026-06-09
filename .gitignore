@@ -23,3 +23,6 @@ p4d/_p4d_cffi*.so
 # C build artifacts
 lib4d_sql/test_regression
 *.out
+
+# Local test credentials (never commit)
+.env.test
