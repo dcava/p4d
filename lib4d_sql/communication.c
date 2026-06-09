@@ -194,34 +194,32 @@ int socket_receiv_header(FOURD *cnx,FOURD_RESULT *state)
 	int crlf=0;
 	int grow_size=1024; //1K
 	int new_size=grow_size;
-	int search_start=0;
-	char *hend=NULL;
-	
+	unsigned char byte;
+	char tail[4]={0,0,0,0}; /* sliding window for \r\n\r\n detection */
+
 	//allocate some space to start with
 	state->header=calloc(sizeof(char),new_size);
-	
-	//read the HEADER, buffered in chunks
+
+	/* Read one byte at a time so we stop exactly at \r\n\r\n and never
+	   consume body bytes that socket_receiv_data must read from the socket. */
 	while (!crlf)
 	{
-		if (len >= new_size - grow_size) {
-			//header storage nearly full. Allocate more.
-			new_size += grow_size;
-			state->header=realloc(state->header,new_size);
-		}
-		iResult = recv(cnx->socket,state->header+len,new_size-len-1, 0);
+		iResult = recv(cnx->socket,&byte,1,0);
 		if (iResult <= 0) {
 			Printf("Error: recv failed or connection closed (%ld)\n", iResult);
 			return 1;
 		}
-		len += iResult;
-		state->header[len]=0;
-		
-		// scan for \r\n\r\n terminator only in new data
-		hend = strstr(state->header+search_start, "\r\n\r\n");
-		if (hend != NULL) crlf=1;
-		search_start = (len > 4) ? len-4 : 0;
+		if (len >= new_size - 5) {
+			new_size += grow_size;
+			state->header=realloc(state->header,new_size);
+		}
+		state->header[len]=(char)byte;
+		len++;
+		tail[0]=tail[1]; tail[1]=tail[2]; tail[2]=tail[3]; tail[3]=(char)byte;
+		if (len >= 4 && memcmp(tail,"\r\n\r\n",4)==0)
+			crlf=1;
 	}
-	
+
 	state->header[len]=0;
 	state->header_size=len;
 	Printf("Receiv:\n%s",state->header);
