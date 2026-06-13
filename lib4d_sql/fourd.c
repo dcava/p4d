@@ -395,7 +395,29 @@ void fourd_free_statement(FOURD_STATEMENT *state){
 		state->query=NULL;
 	}
 	
+	/* Free individual parameter value copies made by _copy() in fourd_bind_param */
 	if(state->elmt!=NULL){
+		unsigned int i;
+		for (i = 0; i < state->nb_element; i++) {
+			if (state->elmt[i].null == 0 && state->elmt[i].pValue != NULL) {
+				switch (state->elmt[i].type) {
+					case VK_STRING:
+						FreeString((FOURD_STRING *)state->elmt[i].pValue);
+						break;
+					case VK_BLOB:
+					case VK_IMAGE:
+						FreeBlob((FOURD_BLOB *)state->elmt[i].pValue);
+						break;
+					case VK_FLOAT:
+						FreeFloat((FOURD_FLOAT *)state->elmt[i].pValue);
+						break;
+					default:
+						Free(state->elmt[i].pValue);
+						break;
+				}
+				state->elmt[i].pValue = NULL;
+			}
+		}
 		free(state->elmt);
 		state->elmt=NULL;
 	}

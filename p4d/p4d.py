@@ -1,10 +1,10 @@
 import os
-from dateutil import parser
-from datetime import datetime, timedelta, time, date
-from collections import defaultdict
-import time as timemod
 import re
-import contextlib
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta, time, date
+
+from dateutil import parser
 
 
 ########################################################################
@@ -20,15 +20,7 @@ paramstyle = "pyformat"
 ## them I'll get a name error when I try to check for them, as I must for
 ## python 2 compatibility.
 ########################################################################
-try:
-    unicode
-except NameError:
-    unicode = str
 
-try:
-    long
-except NameError:
-    long = int
 
 
 ########################################################################
@@ -77,13 +69,13 @@ class NotSupportedError(DatabaseError):
 ## Data type classes
 ########################################################################
 def DateFromTicks(ticks):
-    return Date(*timemod.localtime(ticks)[:3])
+    return Date(*time.localtime(ticks)[:3])
 
 def TimeFromTicks(ticks):
-    return Time(*timemod.localtime(ticks)[3:6])
+    return Time(*time.localtime(ticks)[3:6])
 
 def TimestampFromTicks(ticks):
-    return Timestamp(*timemod.localtime(ticks)[:6])
+    return Timestamp(*time.localtime(ticks)[:6])
 
 ########################################################################
 class Binary(bytes):
@@ -117,12 +109,12 @@ class py4d_cursor(object):
         return self.__rowcount
 
     #----------------------------------------------------------------------
-    def setinputsizes(self):
+    def setinputsizes(self, sizes):
         """"""
         pass
 
     #----------------------------------------------------------------------
-    def setoutputsize(self):
+    def setoutputsize(self, size, column=None):
         """"""
         pass
 
@@ -167,9 +159,11 @@ class py4d_cursor(object):
 
 
     #----------------------------------------------------------------------
-    def execute(self, query, params=[], describe=True, pagesize=None):
+    def execute(self, query, params=None, describe=True, pagesize=None):
         """Prepare and execute a database operation"""
-        if self.connection.connected == False:
+        if params is None:
+            params = []
+        if not self.connection.connected:
             raise InternalError("Database not connected")
 
         if self.__closed:
@@ -179,7 +173,7 @@ class py4d_cursor(object):
         if isinstance(params, dict):
             new_params = []
             # Parse query string for references to dict entries
-            regex = re.compile('%\(([^\)]+)\)s')
+            regex = re.compile(r'%\(([^)]+)\)s')
             for key in re.findall(regex, query):
                 new_params.append(params[key])  # Will raise key error if the query string argument is not in params.
 
@@ -194,7 +188,7 @@ class py4d_cursor(object):
 
         # If using "format" parameter markers, just convert all %<whatever> markers to ?'s
         query = re.sub('%[A-Za-z]', '?', query)
-        query.replace('%%', '%')  # Replace double-quotes with single quote
+        query = query.replace('%%', '%')  # Unescape escaped percent signs
 
 
         # if any parameter is a tuple, we need to modify the query string and
@@ -203,7 +197,7 @@ class py4d_cursor(object):
         while True:
             foundtuple = False
             for idx, param in enumerate(params):
-                if type(param) == list or type(param) == tuple:
+                if isinstance(param, (list, tuple)):
                     foundtuple = True
                     paramlen = len(param)
                     query = self.replace_nth(query, "?",
@@ -220,31 +214,29 @@ class py4d_cursor(object):
         if not self.connection.in_transaction:
             self.connection.__start_transaction__()
 
-        if self.__prepared == False:  #Should always be false, unless we are running an executemany
-            #clean up anything from a previous query, if needed.
+        if not self.__prepared:  # Should always be false, unless we are running an executemany
+            # Clean up anything from a previous query.
             if self.result is not None and self.result != ffi.NULL:
                 self.lib4d_sql.fourd_close_statement(self.result)
+                self.result = None
+
+            # Free the previous statement if one exists.
+            if self.fourd_query is not None and self.fourd_query != ffi.NULL:
+                self.lib4d_sql.fourd_free_statement(self.fourd_query)
+                self.fourd_query = None
 
             self.fourd_query = self.lib4d_sql.fourd_prepare_statement(self.fourdconn, query.encode('utf-8'))
 
         if self.fourd_query == ffi.NULL:
-            ##Query was unable to be prepared, so create a default object
-            #self.fourd_query = ffi.new("FOURD_STATEMENT *")
-            #self.fourd_query.cnx = self.fourdconn
-            #self.fourd_query.query = ffi.new("char[]", query.encode())
-            #self.fourd_query.elmt = ffi.new("FOURD_ELEMENT *")
-
             error = ffi.string(self.lib4d_sql.fourd_error(self.fourdconn))
             raise ProgrammingError(error)
 
         # Some data types need special handling, but most we can just convert to a string.
         # All strings need UTF-16LE encoding.
-        fourdtypes = defaultdict(lambda:self.lib4d_sql.VK_STRING,
+        fourdtypes = defaultdict(lambda: self.lib4d_sql.VK_STRING,
                                  {str: self.lib4d_sql.VK_STRING,
-                                  unicode: self.lib4d_sql.VK_STRING,
                                   bool: self.lib4d_sql.VK_BOOLEAN,
                                   int: self.lib4d_sql.VK_LONG,
-                                  long: self.lib4d_sql.VK_LONG,
                                   float: self.lib4d_sql.VK_REAL,
                                   })
 
@@ -253,14 +245,14 @@ class py4d_cursor(object):
             fourd_type = fourdtypes[param_type]
             manual_clear = False
 
-            if param_type == str or param_type == unicode:
+            if param_type == str:
                 # Very similar to the default, but we don't have to call string on the parameter
                 param = self.lib4d_sql.fourd_create_string(parameter.encode('UTF-16LE'),
                                                            len(parameter))
                 manual_clear = True
             elif param_type == bool:
                 param = ffi.new("FOURD_BOOLEAN *", parameter)
-            elif param_type == int or param_type == long:
+            elif param_type == int:
                 param = ffi.new("FOURD_LONG *", parameter)
             elif param_type == float:
                 param = ffi.new("FOURD_REAL *", parameter)
@@ -294,12 +286,13 @@ class py4d_cursor(object):
 
             # Clean up any string parameters created by the above calls to fourd_create_string
             if manual_clear:
-                self.lib4d_sql.free(param.data)
-                self.lib4d_sql.free(param)
+                self.lib4d_sql.Free(param.data)
+                self.lib4d_sql.Free(param)
 
-        #properly clean up any old results
+        # Properly clean up any old results.
         if self.result is not None and self.result != ffi.NULL:
             self.lib4d_sql.fourd_free_result(self.result)
+            self.result = None
 
         # Run the query and return the results
         _pagesize = pagesize if pagesize is not None else self.pagesize
@@ -364,22 +357,17 @@ class py4d_cursor(object):
     def executemany(self, query, params):
         """"""
         for paramlist in params:
-            #free any memory used in the last pass.
+            self.execute(query, paramlist, describe=False)
+            # Close and free the last result, then reset prepared flag
+            # so the next iteration prepares a fresh statement.
             if self.result is not None and self.result != ffi.NULL:
+                self.lib4d_sql.fourd_close_statement(self.result)
                 self.lib4d_sql.fourd_free_result(self.result)
                 self.result = None
+            self.__prepared = False
 
-            self.execute(query, paramlist, describe=False)
-            self.lib4d_sql.fourd_close_statement(self.result)  #close the statement
-            self.__prepared = True
-
-        #we don't run describe on the individual queries in order to be more efficent.
+        # We don't run describe on the individual queries in order to be more efficient.
         self.__describe()
-
-        #finally free any remaining memory used.
-        self.lib4d_sql.fourd_free_result(self.result)
-        self.result = None
-        self.__prepared = False
 
     #----------------------------------------------------------------------
     def fetchone(self):
@@ -387,7 +375,7 @@ class py4d_cursor(object):
         if self.__closed:
             raise InterfaceError("cursor already closed.")
 
-        if self.connection.connected == False:
+        if not self.connection.connected:
             raise InternalError("Database not connected")
 
         if self.__resulttype is None:
@@ -406,7 +394,7 @@ class py4d_cursor(object):
 
         self.__rownumber = self.result.numRow
 
-        numcols = self.lib4d_sql.fourd_num_columns(self.result);
+        numcols = self.lib4d_sql.fourd_num_columns(self.result)
         strlen = ffi.new("size_t*")
         inbuff = ffi.new("char*[1]")
 
@@ -417,11 +405,11 @@ class py4d_cursor(object):
                         row.append(None)
                         continue
 
-            conver_res = self.lib4d_sql.fourd_field_to_string(self.result, col, inbuff, strlen)
+            convert_res = self.lib4d_sql.fourd_field_to_string(self.result, col, inbuff, strlen)
             strdata = inbuff[0]
-            if conver_res == 1 and strdata != ffi.NULL:
+            if convert_res == 1 and strdata != ffi.NULL:
                 output = ffi.buffer(strdata, strlen[0])[:]
-                self.lib4d_sql.free(strdata)
+                self.lib4d_sql.Free(strdata)
                 strdata = ffi.NULL
             else:
                 output = b''
@@ -440,8 +428,9 @@ class py4d_cursor(object):
                 row.append(intval[0])
             elif fieldtype == self.lib4d_sql.VK_REAL or fieldtype == self.lib4d_sql.VK_FLOAT:
                 if output == b'':
-                    row.append(None)  #Empty output=null
-                row.append(float(output))
+                    row.append(None)  # Empty output = null
+                else:
+                    row.append(float(output))
             elif fieldtype == self.lib4d_sql.VK_TIMESTAMP:
                 try:
                     s = output.decode('ascii')
@@ -483,7 +472,7 @@ class py4d_cursor(object):
     #----------------------------------------------------------------------
     def fetchmany(self, size=arraysize):
         """"""
-        if self.connection.connected == False:
+        if not self.connection.connected:
             raise InternalError("Database not connected")
 
         if self.__closed:
@@ -504,7 +493,7 @@ class py4d_cursor(object):
     #----------------------------------------------------------------------
     def fetchall(self):
         """"""
-        if self.connection.connected == False:
+        if not self.connection.connected:
             raise InternalError("Database not connected")
 
         if self.__closed:
@@ -530,8 +519,6 @@ class py4d_cursor(object):
             raise StopIteration
         return result
 
-    next = __next__ # for python 2 compatibility
-
     #----------------------------------------------------------------------
     def __iter__(self):
         """"""
@@ -553,6 +540,7 @@ class py4d_cursor(object):
         """"""
         if self.fourd_query is not None and self.fourd_query != ffi.NULL:
             self.lib4d_sql.fourd_free_statement(self.fourd_query)
+            self.fourd_query = None
 
 
 
@@ -589,7 +577,7 @@ class py4d_connection:
     def __start_transaction__(self):
         """"""
         if self.in_transaction:
-            return;  #already in transaction, don't do anything
+            return  # already in transaction, don't do anything
         self.in_transaction = True
         self.__private_cursor__.execute("START TRANSACTION")
 
@@ -658,8 +646,8 @@ class py4d_connection:
 def connect(dsn=None, user=None, password=None, host=None, database=None, port=None):
     connect_args = {}
 
-    # make an argument dict based off of the arguments passed.
-    # if a dsn is given, we need to split it up.
+    # Make an argument dict based off of the arguments passed.
+    # If a DSN is given, we need to split it up.
     if dsn is not None:
         dsn_parts = dsn.split(';')
         for part in dsn_parts:
@@ -670,6 +658,11 @@ def connect(dsn=None, user=None, password=None, host=None, database=None, port=N
 
             connect_args[part_parts[0]] = part_parts[1]
 
+    # Convert DSN-provided port to int if present.
+    if 'port' in connect_args:
+        connect_args['port'] = int(connect_args['port'])
+
+    # Explicit keyword arguments override DSN values.
     if password is not None:
         connect_args['password'] = password
 
@@ -684,8 +677,9 @@ def connect(dsn=None, user=None, password=None, host=None, database=None, port=N
 
     if port is not None:
         connect_args['port'] = int(port)
-    else:
-        connect_args['port'] = 19812
+
+    # Only set the default port if none was provided via DSN or kwarg.
+    connect_args.setdefault('port', 19812)
 
     if 'host' not in connect_args:
         # Need at least a host to connect to
