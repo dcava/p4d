@@ -763,10 +763,8 @@ void _free_data_result(FOURD_RESULT *res)
 				FreeString((FOURD_STRING *)pElmt->pValue);						
 				break;
 			case VK_BLOB:
-				FreeBlob((FOURD_BLOB *)pElmt->pValue);
-				break;
 			case VK_IMAGE:
-				Printferr("Image-Type not supported\n");
+				FreeBlob((FOURD_BLOB *)pElmt->pValue);
 				break;
 			default:
 				break;
@@ -915,7 +913,6 @@ char *_serialize(char *data,unsigned int *size, FOURD_TYPE type, void *pObj)
 {
 	if(p) {
 		free(p);
-		p=NULL;
 	}
 }
 void FreeFloat(FOURD_FLOAT *p)

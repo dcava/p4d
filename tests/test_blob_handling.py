@@ -218,10 +218,7 @@ class TestConnectParsing:
             assert call_kwargs["user"] == "admin"
             assert call_kwargs["password"] == "s3cr3t"
             assert call_kwargs["database"] == "mydb"
-            # Known limitation: DSN port is overwritten by the default (19812) because
-            # connect() checks the function-level `port` kwarg, not connect_args['port'].
-            # A port from DSN only takes effect if the `port=` kwarg is also passed.
-            assert call_kwargs["port"] == 19812
+            assert call_kwargs["port"] == 5000  # DSN port is now preserved
 
     def test_unrecognized_dsn_key_raises(self):
         from p4d.p4d import connect

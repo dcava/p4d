@@ -57,9 +57,9 @@ typedef struct in_addr IN_ADDR;
 #define VERBOSE 0
 
 
-/* taille maximal de 2K pour les envoi de requÍte  */
+/* taille maximal de 2K pour les envoi de requï¿½te  */
 /* #define BUFFER_LENGTH 131072 */
-/* taille maximal de 128K pour les rÈponse */
+/* taille maximal de 128K pour les rï¿½ponse */
 #define BUFFER_LENGTH 131072
 #define ERROR_STRING_LENGTH 2048
 
@@ -245,6 +245,10 @@ const char * fourd_sqlstate(FOURD *cnx);
 void fourd_free(FOURD* cnx);
 void fourd_free_statement(FOURD_STATEMENT *state);
 void fourd_timeout(FOURD* cnx,int timeout);
+
+/* Library-provided memory deallocation. All memory allocated by the library
+   must be freed through this function to avoid allocator mismatches. */
+void Free(void *p);
 
 /*function on FOURD_RESULT*/
 FOURD_LONG8 fourd_num_rows(FOURD_RESULT *result);
