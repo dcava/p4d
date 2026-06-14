@@ -10,9 +10,10 @@ This is an actively maintained fork of [ibrewster/p4d](https://github.com/ibrews
 
 ## You probably don't want to use this....
 
-This library facilitates access to a 4D database via the exposed SQL backend. 4D speaks an SQL dialect that is not well documented. I updated this fork to support BLOBs which are new since the lib_4dsql library was first released by 4D. Since that time, 4D have discontinued ODBC drivers for MacOS (last v18) and Windows (v20). Windows ODBC drivers do continue to work with 4Dv21 and that pathway should be strongly prefered over this library. If you don't have a Windows PC or a working ODBC driver, then p4d will get the job done.
+This library facilitates access to a 4D database via the exposed SQL backend. 4D speaks an SQL dialect that is not well documented. I updated this fork to support BLOBs which are new since the lib_4dsql library was first released by 4D. Since that time, 4D have discontinued ODBC drivers for MacOS (last v18) and Windows (v20). Windows ODBC drivers do continue to work with 4Dv21 and that pathway should be strongly preferred over this library. If you don't have a Windows PC or a working ODBC driver, then p4d will get the job done.
 
 Please don't write anything important that relies on this library.
+---
 
 ---
 
@@ -27,7 +28,7 @@ pip install git+https://github.com/dcava/p4d.git
 uv pip install git+https://github.com/dcava/p4d.git
 ```
 
-**Requirements:** A C compiler and `cffi` (installed automatically). On macOS, Xcode command-line tools suffice (`xcode-select --install`).
+**Requirements:** A C compiler, `cffi`, and `python-dateutil` (installed automatically). On macOS, Xcode command-line tools suffice (`xcode-select --install`).
 
 ---
 
@@ -46,7 +47,13 @@ for row in cur.fetchall():
 conn.close()
 ```
 
-Connection parameters follow the DB API 2.0 convention. Use as a context manager:
+Connection parameters follow the DB API 2.0 convention. You can also use a DSN string:
+
+```python
+conn = p4d.connect(dsn="host=192.168.1.1;user=sqluser;password=secret;port=19812")
+```
+
+Use as a context manager:
 
 ```python
 with p4d.connect(...) as conn:
@@ -82,6 +89,41 @@ while True:
 
 ---
 
+## Testing
+
+The test suite includes unit tests for BLOB handling and cursor state (no server needed)
+and integration tests against a live 4D server.
+
+**Unit tests (no server required):**
+
+```sh
+pytest tests/test_blob_handling.py -v
+```
+
+**Integration tests (requires a 4D server):**
+
+Create a gitignored `.env.test` file at the repo root:
+
+```
+FOURD_HOST=your-server-ip
+FOURD_PORT=19812
+FOURD_USER=sqluser
+FOURD_PWD=your-password
+FOURD_TABLE=Patient
+FOURD_ID_COL=Id
+```
+
+Then run:
+
+```sh
+pytest tests/test_integration.py -v
+```
+
+Tests auto-skip if the server is unreachable. The table needs at least one
+row with an integer primary key.
+
+---
+
 ## Environment
 
 | Variable | Default | Purpose |
@@ -100,6 +142,28 @@ The bundled `lib4d_sql` C library is copyright © 2009 4D SAS, offered under you
 
 ## Changelog
 
+### v2.1 (2026-06)
+
+**Python driver:**
+- Fix `%%` escape in format-style queries (was silently ignored, passed `%%` to server)
+- Fix DSN-provided port being overwritten by default 19812
+- Fix double-free risk when cursor used as context manager (`__exit__` now sets `fourd_query = None`)
+- Fix statement leak on cursor re-execute (old statement now freed before preparing new one)
+- Fix `executemany` flow: close and free results correctly between batches
+- Fix null float/double columns appending both `None` and `float()` to the row
+- Remove Python 2 compatibility shims (package requires Python ≥ 3.8)
+- Fix `setinputsizes`/`setoutputsize` signatures to match DB API 2.0
+- Replace mutable default argument (`params=[]`) with `params=None`
+- Use library-provided `Free()` instead of bare `free()` for C allocations
+
+**C library (lib4d_sql):**
+- Fix memory leak in `fourd_free_statement`: parameter value copies are now freed
+- Fix memory leak in `_free_data_result`: `VK_IMAGE` fields now freed via `FreeBlob`
+- Expose `Free()` in public API so callers can free library-allocated memory
+
+**Tests:**
+- Fix DSN parsing test to assert new correct behavior (port preserved from DSN)
+
 ### v2.0 (2026)
 *Fork relaunched as dcava/p4d — upstream (ibrewster/p4d) is no longer maintained.*
 
@@ -108,7 +172,7 @@ The bundled `lib4d_sql` C library is copyright © 2009 4D SAS, offered under you
 - Handle `VK_UNKNOWN` (type 0) gracefully in cursor description
 - Modernise CFFI setup: replace deprecated `verifier` with out-of-line API mode
 - Fix `fetchmany` `NameError` (`none` → `None`)
-- Communications layer updates
+- Fix socket header-reader hang (chunked `recv` consumed body bytes, now reads byte-at-a-time)
 
 ### v1.9 (2023-01-13) — ibrewster/p4d
 - Fix datatype in C library to properly handle characters > 128
