@@ -172,8 +172,12 @@ class TestDataTypes:
         cur.close()
 
     def test_fetchall(self, conn):
+        # NOTE: pagesize is now honoured for every FETCH-RESULT page (it used
+        # to silently fall back to 100 after the first page), so a full-table
+        # fetchall needs a realistic page size or it makes rows/pagesize
+        # round trips.
         cur = conn.cursor()
-        cur.execute(f"SELECT {_ID_COL} FROM {_TABLE} WHERE {_ID_COL} > 0", pagesize=5)
+        cur.execute(f"SELECT {_ID_COL} FROM {_TABLE} WHERE {_ID_COL} > 0", pagesize=2000)
         rows = cur.fetchall()
         assert isinstance(rows, list)
         assert len(rows) > 0
@@ -184,6 +188,44 @@ class TestDataTypes:
         cur.execute(f"SELECT {_ID_COL} FROM {_TABLE} WHERE {_ID_COL} > 0", pagesize=1)
         # rowcount may be -1 if server didn't report it, but must not crash
         assert isinstance(cur.rowcount, int)
+        cur.close()
+
+
+# ── read-only mode ─────────────────────────────────────────────────────────────
+
+class TestReadOnly:
+    # The 4D server licence may only allow one concurrent SQL connection, so
+    # flip the shared connection into read-only mode rather than opening a
+    # second one. read_only is a plain client-side attribute.
+    @pytest.fixture()
+    def ro_conn(self, conn):
+        conn.rollback()  # leave any implicit transaction from earlier tests
+        conn.read_only = True
+        yield conn
+        conn.read_only = False
+
+    def test_select_works(self, ro_conn):
+        cur = ro_conn.cursor()
+        cur.execute(f"SELECT {_ID_COL} FROM {_TABLE} WHERE {_ID_COL} > 0", pagesize=1)
+        assert cur.fetchone() is not None
+        cur.close()
+
+    def test_no_transaction_opened(self, ro_conn):
+        cur = ro_conn.cursor()
+        cur.execute(f"SELECT {_ID_COL} FROM {_TABLE} WHERE {_ID_COL} > 0", pagesize=1)
+        cur.fetchone()
+        assert ro_conn.in_transaction is False
+        cur.close()
+
+    def test_write_statement_rejected(self, ro_conn):
+        from p4d.p4d import NotSupportedError
+        cur = ro_conn.cursor()
+        with pytest.raises(NotSupportedError):
+            cur.execute(f"UPDATE {_TABLE} SET {_ID_COL} = {_ID_COL} WHERE 1 = 0")
+        with pytest.raises(NotSupportedError):
+            cur.execute(f"DELETE FROM {_TABLE} WHERE 1 = 0")
+        with pytest.raises(NotSupportedError):
+            cur.execute("INSERT INTO NoSuchTable (a) VALUES (1)")
         cur.close()
 
 
