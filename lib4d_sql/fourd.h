@@ -157,6 +157,12 @@ typedef struct{
 	char *preferred_image_types;
 	int timeout;
 
+	/* buffered reader: bytes [rbuf_pos, rbuf_len) are received but unread */
+	unsigned char *rbuf;
+	unsigned int rbuf_size;
+	unsigned int rbuf_pos;
+	unsigned int rbuf_len;
+
 } FOURD;
 
 typedef struct{
@@ -220,6 +226,12 @@ typedef struct{
 
 	/*current row index*/
 	unsigned int numRow;
+
+	/*page size requested for FETCH-RESULT paging (0 = default 100)*/
+	unsigned int page_size;
+
+	/*arena holding all row data; freed in one pass with the result*/
+	void *arena;
 }FOURD_RESULT;
 
 typedef struct {

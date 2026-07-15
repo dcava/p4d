@@ -69,7 +69,7 @@ int _snprintf(char *buff, int size, const char *format,...)
 int dblogin(FOURD *cnx,unsigned short int id_cnx,const char *user,const char*pwd,const char*image_type)
 {
 	char msg[2048];
-	FOURD_RESULT state;
+	FOURD_RESULT state={0};
 	unsigned char *user_b64=NULL,*pwd_b64=NULL;
 	int len;
 	_clear_atrr_cnx(cnx);
@@ -121,22 +121,46 @@ int _query(FOURD *cnx,unsigned short int id_cmd,const char *request,FOURD_RESULT
 #endif
 
 	cnx->updated_row=-1;
-	socket_send(cnx,msg);
-	Free(msg);
-	
-	if(receiv_check(cnx,res)!=0)
+	if(socket_send(cnx,msg)!=0) {
+		Free(msg);
+		if(result==NULL)
+			Free(res);
 		return 1;
+	}
+	Free(msg);
+	res->page_size=(res_size>0)?(unsigned int)res_size:0;
+
+	if(receiv_check(cnx,res)!=0) {
+		if(result==NULL) {
+			Free(res->header);
+			Free(res);
+		}
+		return 1;
+	}
 
 	switch(res->resultType)	{
 	case UPDATE_COUNT:
 		//get Update-count: Nb row updated
 		cnx->updated_row=-1;
-		socket_receiv_update_count(cnx,res);		
+		if(socket_receiv_update_count(cnx,res)!=0) {
+			if(result==NULL) {
+				Free(res->header);
+				Free(res);
+			}
+			return 1;
+		}
 		_free_data_result(res);
 		break;
 	case RESULT_SET:
 		//get data
-		socket_receiv_data(cnx,res);
+		if(socket_receiv_data(cnx,res)!=0) {
+			if(result==NULL) {
+				_free_data_result(res);
+				Free(res->header);
+				Free(res);
+			}
+			return 1;
+		}
 		cnx->updated_row=-1;
 		if(result==NULL) {
 			_free_data_result(res);
@@ -176,12 +200,18 @@ int _prepare_statement(FOURD *cnx,unsigned short int id_cmd,const char *request)
 #endif
 	
 	cnx->updated_row=-1;
-	socket_send(cnx,msg);
-	Free(msg);
-	
-	if(receiv_check(cnx,res)!=0)
+	if(socket_send(cnx,msg)!=0) {
+		Free(msg);
+		fourd_free_result(res);
 		return 1;
-	
+	}
+	Free(msg);
+
+	if(receiv_check(cnx,res)!=0) {
+		fourd_free_result(res);
+		return 1;
+	}
+
 	switch(res->resultType)	{
 		case UPDATE_COUNT:
 			//get Update-count: Nb row updated
@@ -191,7 +221,10 @@ int _prepare_statement(FOURD *cnx,unsigned short int id_cmd,const char *request)
 			break;
 		case RESULT_SET:
 			//get data
-			socket_receiv_data(cnx,res);
+			if(socket_receiv_data(cnx,res)!=0) {
+				fourd_free_result(res);
+				return 1;
+			}
 			cnx->updated_row=-1;
 			break;
 		default:
@@ -266,26 +299,57 @@ int _query_param(FOURD *cnx,unsigned short int id_cmd, const char *request,unsig
 	
 	Free(sParam);
 
-	socket_send(cnx,msg);
+	res->page_size=(res_size>0)?(unsigned int)res_size:0;
+	if(socket_send(cnx,msg)!=0) {
+		Free(msg);
+		if(data!=NULL)
+			free(data);
+		if(result==NULL)
+			Free(res);
+		return 1;
+	}
 	Free(msg);
-	socket_send_data(cnx,data,data_len);
+	if(socket_send_data(cnx,data,data_len)!=0) {
+		if(data!=NULL)
+			free(data);
+		if(result==NULL)
+			Free(res);
+		return 1;
+	}
 	//done with the data object, free it
 	if(data!=NULL)
 		free(data);
-	
+
 	if(receiv_check(cnx,res)!=0){
+		if(result==NULL) {
+			Free(res->header);
+			Free(res);
+		}
 		return 1;
 	}
 
 	switch(res->resultType)	{
 	case UPDATE_COUNT:
 		//get Update-count: Nb row updated
-		socket_receiv_update_count(cnx,res);		
+		if(socket_receiv_update_count(cnx,res)!=0) {
+			if(result==NULL) {
+				Free(res->header);
+				Free(res);
+			}
+			return 1;
+		}
 		_free_data_result(res);
 		break;
 	case RESULT_SET:
 		//get data
-		socket_receiv_data(cnx,res);
+		if(socket_receiv_data(cnx,res)!=0) {
+			if(result==NULL) {
+				_free_data_result(res);
+				Free(res->header);
+				Free(res);
+			}
+			return 1;
+		}
 		cnx->updated_row=-1;
 		if(result==NULL) {
 			_free_data_result(res);
@@ -316,10 +380,12 @@ int __fetch_result(FOURD *cnx,unsigned short int id_cmd,int statement_id,int com
 		return 0;
 	}
 	sprintf_s(msg,2048,"%03d FETCH-RESULT\r\nSTATEMENT-ID:%d\r\nCOMMAND-INDEX:%03d\r\nFIRST-ROW-INDEX:%d\r\nLAST-ROW-INDEX:%d\r\nOutput-Mode:%s\r\n\r\n",id_cmd,statement_id,command_index,first_row,last_row,"release");
-	socket_send(cnx,msg);
+	if(socket_send(cnx,msg)!=0)
+		return 1;
 	if(receiv_check(cnx,result)!=0)
 		return 1;
-	socket_receiv_data(cnx,result);
+	if(socket_receiv_data(cnx,result)!=0)
+		return 1;
 
 	return 0;
 }
@@ -330,13 +396,16 @@ int _fetch_result(FOURD_RESULT *res,unsigned short int id_cmd)
 	FOURD_RESULT *nRes=NULL;
 	void *last_data=NULL;
 	//int id_statement=res->id_statement;
+	unsigned int page=(res->page_size>0)?res->page_size:100;
 	unsigned int first_row=res->first_row+res->row_count_sent;
-	unsigned int last_row=res->first_row+res->row_count_sent+99;
+	unsigned int last_row=first_row+page-1;
 	if(last_row>=res->row_count) {
 		last_row=res->row_count-1;
 	}
 
 	nRes=calloc(1,sizeof(FOURD_RESULT));
+	if(nRes==NULL)
+		return 1;
 	_clear_atrr_cnx(cnx);
 	/*set paramature unsed in socket_receiv */
 	nRes->first_row=first_row;
@@ -344,14 +413,28 @@ int _fetch_result(FOURD_RESULT *res,unsigned short int id_cmd)
 	nRes->cnx=res->cnx;
 	nRes->row_type=res->row_type;
 	nRes->updateability=res->updateability;
+	nRes->page_size=res->page_size;
 	/*get new Result set in new FOURD_RESULT*/
 	if(__fetch_result(cnx,123,res->id_statement,0,first_row,last_row,nRes)){
+		/*propagate the error to the caller's result*/
+		res->status=nRes->status;
+		res->error_code=nRes->error_code?nRes->error_code:cnx->error_code;
+		sprintf_s(res->error_string,sizeof(res->error_string),"%s",nRes->error_string[0]?nRes->error_string:cnx->error_string);
+		if(nRes->row_type.Column!=res->row_type.Column)
+			Free(nRes->row_type.Column);
+		_free_data_result(nRes);
+		Free(nRes->header);
+		Free(nRes);
 		return 1;
 	}
 	/*switch data between res and nRes FOURD_RESULT*/
 	last_data=res->elmt;
 	res->elmt=nRes->elmt;
 	nRes->elmt=last_data;	/*important for free memory after */
+	/*swap arenas with the data they own*/
+	last_data=res->arena;
+	res->arena=nRes->arena;
+	nRes->arena=last_data;
 	res->first_row=first_row;
 	/* swap row_count_sent so _free_data_result(nRes) frees the old elmt with
 	   the correct row count, not the count of rows just received */
@@ -363,12 +446,17 @@ int _fetch_result(FOURD_RESULT *res,unsigned short int id_cmd)
 	res->error_code=nRes->error_code;
 	sprintf_s(res->error_string,sizeof(res->error_string),"%s",nRes->error_string);
 	res->status=nRes->status;
-	
+
 
 	/*free memory */
+	/*the FETCH-RESULT response header may have allocated its own column
+	  metadata into nRes; free it if it is not the array shared with res*/
+	if(nRes->row_type.Column!=res->row_type.Column)
+		Free(nRes->row_type.Column);
 	_free_data_result(nRes);
+	Free(nRes->header);
 	Free(nRes);
-	
+
 	return 0;
 
 }
@@ -376,7 +464,7 @@ int close_statement(FOURD_RESULT *res,unsigned short int id_cmd)
 {
 	char msg[2048];	
 	FOURD *cnx=NULL;
-	FOURD_RESULT state;
+	FOURD_RESULT state={0};
 
 	if(res==NULL)
 		return 0;
@@ -395,7 +483,7 @@ int close_statement(FOURD_RESULT *res,unsigned short int id_cmd)
 int dblogout(FOURD *cnx,unsigned short int id_cmd)
 {
 	char msg[2048];
-	FOURD_RESULT state;
+	FOURD_RESULT state={0};
 	_clear_atrr_cnx(cnx);
 	sprintf_s(msg,2048,"%03d LOGOUT\r\n\r\n",id_cmd);
 	socket_send(cnx,msg);
@@ -409,7 +497,7 @@ int dblogout(FOURD *cnx,unsigned short int id_cmd)
 int quit(FOURD *cnx,unsigned short int id_cmd)
 {
 	char msg[2048];
-	FOURD_RESULT state;
+	FOURD_RESULT state={0};
 	_clear_atrr_cnx(cnx);
 	sprintf_s(msg,2048,"%03d QUIT\r\n\r\n",id_cmd);
 	socket_send(cnx,msg);
@@ -531,6 +619,10 @@ int traite_header_response(FOURD_RESULT* state)
 {
 	char *header=state->header;
 	FOURD_LONG8 ret_get_status=0;
+	if(header==NULL) {
+		state->status=FOURD_ERROR;
+		return 1;
+	}
 	//get status in the header
 	state->elmt=0;
 	ret_get_status=_get_status(state->header,&(state->status),&(state->error_code),state->error_string);
@@ -548,9 +640,22 @@ int traite_header_response(FOURD_RESULT* state)
 	{
 		char column_count[250];
 		if(get(header,"Column-Count",column_count,250)==0) {
-			state->row_type.nbColumn=atoi(column_count);
+			int nb=atoi(column_count);
+			if(nb<0 || nb>FOURD_MAX_COLUMNS) {
+				state->status=FOURD_ERROR;
+				state->error_code=-1;
+				sprintf_s(state->error_string,ERROR_STRING_LENGTH,"Invalid Column-Count in response header");
+				return 1;
+			}
+			state->row_type.nbColumn=(unsigned int)nb;
 			//memory allocate for column name and column type
-			state->row_type.Column=calloc(state->row_type.nbColumn,sizeof(FOURD_COLUMN));
+			state->row_type.Column=calloc((size_t)nb,sizeof(FOURD_COLUMN));
+			if(nb>0 && state->row_type.Column==NULL) {
+				state->status=FOURD_ERROR;
+				state->error_code=-1;
+				sprintf_s(state->error_string,ERROR_STRING_LENGTH,"Out of memory reading response header");
+				return 1;
+			}
 			Printf("Column-Count:%d\n",state->row_type.nbColumn);
 		}
 	}
@@ -616,12 +721,19 @@ int traite_header_response(FOURD_RESULT* state)
 		//if we ran into any issues with the above manipulation, we just use the
 		//default size of 2048 and pray it works :)
 		column_alias=calloc(sizeof(char), base64_size+5); //I always like to give a few bytes wiggle
-		
+		if(column_alias==NULL) {
+			state->status=FOURD_ERROR;
+			state->error_code=-1;
+			sprintf_s(state->error_string,ERROR_STRING_LENGTH,"Out of memory reading response header");
+			return 1;
+		}
+
 		char *context=NULL;
 		if(get(header,"Column-Aliases-Base64",column_alias,base64_size)==0) {
 			/* delete the last espace char if exist */
-			if(column_alias[strlen(column_alias)-1]==' ') {
-				column_alias[strlen(column_alias)-1]=0;
+			size_t alias_len=strlen(column_alias);
+			if(alias_len>0 && column_alias[alias_len-1]==' ') {
+				column_alias[alias_len-1]=0;
 			}
 			Printf("Column-Aliases-Base64 => '%s'\n",column_alias);
 			_alias_str_replace(column_alias);
@@ -650,7 +762,8 @@ int traite_header_response(FOURD_RESULT* state)
 	{
 		char row_count[250];
 		if(get(header,"Row-Count",row_count,250)==0) {
-			state->row_count=atoi(row_count);
+			int rc=atoi(row_count);
+			state->row_count=(rc<0)?0:(unsigned int)rc;
 			Printf("Row-Count:%d\n",state->row_count);
 		}
 	}
@@ -658,8 +771,9 @@ int traite_header_response(FOURD_RESULT* state)
 	{
 		char row_count[250];
 		if(get(header,"Row-Count-Sent",row_count,250)==0) {
+			int rc=atoi(row_count);
 			Printf("Row-Count-Sent:\"%s\" <=lut\n",row_count);
-			state->row_count_sent=atoi(row_count);
+			state->row_count_sent=(rc<0)?0:(unsigned int)rc;
 			Printf("Row-Count-Sent:%d\n",state->row_count_sent);
 		}
 	}
@@ -713,7 +827,17 @@ int traite_header_response(FOURD_RESULT* state)
 
 int receiv_check(FOURD *cnx,FOURD_RESULT *state)
 {
-	socket_receiv_header(cnx,state);
+	if(socket_receiv_header(cnx,state)!=0) {
+		cnx->status=FOURD_ERROR;
+		if(cnx->error_code==0) {
+			cnx->error_code=-1;
+			sprintf_s(cnx->error_string,ERROR_STRING_LENGTH,"Connection lost while reading response header");
+		}
+		state->status=FOURD_ERROR;
+		state->error_code=cnx->error_code;
+		strncpy_s(state->error_string,ERROR_STRING_LENGTH,cnx->error_string,ERROR_STRING_LENGTH);
+		return 1;
+	}
 	if(traite_header_response(state)!=0) {
 		Printferr("Error in traite_header_response\n");
 		cnx->status=state->status;
@@ -743,6 +867,13 @@ void _free_data_result(FOURD_RESULT *res)
 	unsigned int nbElmt=nbCol*nbRow;
 	unsigned int i=0;
 	FOURD_ELEMENT *pElmt=res->elmt;
+	if(res->arena!=NULL) {
+		/* all values live in the arena: free it in one pass */
+		_arena_free(res);
+		Free(res->elmt);
+		res->elmt=NULL;
+		return;
+	}
 	if(pElmt==NULL) {
 		return;
 	}
@@ -770,8 +901,9 @@ void _free_data_result(FOURD_RESULT *res)
 				break;
 		}
 	}
-	
+
 	Free(res->elmt);
+	res->elmt=NULL;
 }
 
 void *_copy(FOURD_TYPE type,void *org)
@@ -837,6 +969,51 @@ void *_copy(FOURD_TYPE type,void *org)
 	}
 	return buff;
 }
+/**********************************************************************/
+/* Per-result arena allocator                                         */
+/* All row values are bump-allocated here and freed in a single pass  */
+/* by _arena_free, replacing one calloc/free pair per cell.           */
+/**********************************************************************/
+typedef struct FOURD_ARENA {
+	struct FOURD_ARENA *next;
+	size_t used;
+	size_t cap;
+	/* data follows the header */
+} FOURD_ARENA;
+
+#define FOURD_ARENA_CHUNK_SIZE (256*1024)
+
+void *_arena_alloc(FOURD_RESULT *res,size_t size)
+{
+	FOURD_ARENA *a=res->arena;
+	void *p=NULL;
+	size=(size+7)&~(size_t)7;	/* 8-byte alignment */
+	if(a==NULL || a->cap-a->used<size) {
+		size_t cap=(size>FOURD_ARENA_CHUNK_SIZE)?size:FOURD_ARENA_CHUNK_SIZE;
+		FOURD_ARENA *n=malloc(sizeof(FOURD_ARENA)+cap);
+		if(n==NULL)
+			return NULL;
+		n->next=a;
+		n->used=0;
+		n->cap=cap;
+		res->arena=n;
+		a=n;
+	}
+	p=(char*)(a+1)+a->used;
+	a->used+=size;
+	return p;
+}
+void _arena_free(FOURD_RESULT *res)
+{
+	FOURD_ARENA *a=res->arena;
+	while(a!=NULL) {
+		FOURD_ARENA *n=a->next;
+		free(a);
+		a=n;
+	}
+	res->arena=NULL;
+}
+
 char *_serialize(char *data,unsigned int *size, FOURD_TYPE type, void *pObj)
 {
 	int lSize=0;
