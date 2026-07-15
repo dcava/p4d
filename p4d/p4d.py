@@ -28,6 +28,24 @@ paramstyle = "pyformat"
 ########################################################################
 from ._p4d_cffi import ffi, lib as lib4d_sql
 
+# Hoisted type constants: attribute lookups on the cffi lib are slow and
+# fetchone() dispatches on these for every cell.
+VK_UNKNOW = lib4d_sql.VK_UNKNOW
+VK_BOOLEAN = lib4d_sql.VK_BOOLEAN
+VK_BYTE = lib4d_sql.VK_BYTE
+VK_WORD = lib4d_sql.VK_WORD
+VK_LONG = lib4d_sql.VK_LONG
+VK_LONG8 = lib4d_sql.VK_LONG8
+VK_REAL = lib4d_sql.VK_REAL
+VK_FLOAT = lib4d_sql.VK_FLOAT
+VK_TIME = lib4d_sql.VK_TIME
+VK_TIMESTAMP = lib4d_sql.VK_TIMESTAMP
+VK_DURATION = lib4d_sql.VK_DURATION
+VK_TEXT = lib4d_sql.VK_TEXT
+VK_STRING = lib4d_sql.VK_STRING
+VK_BLOB = lib4d_sql.VK_BLOB
+VK_IMAGE = lib4d_sql.VK_IMAGE
+
 ########################################################################
 
 
@@ -89,7 +107,7 @@ class Binary(bytes):
 class py4d_cursor(object):
     """"""
     arraysize = 1
-    pagesize = 100
+    pagesize = 1000
 
     __resulttype = None
     __prepared = False
@@ -124,12 +142,14 @@ class py4d_cursor(object):
         self.__rowcount = -1
         self.__description = None
         self.__rownumber = None
+        self.__coltypes = []
         self.result = None
         self.fourd_query = None
 
         self.fourdconn = fourdconn
         self.connection = connection
         self.lib4d_sql = lib4d
+        self.pagesize = connection.pagesize
 
     #----------------------------------------------------------------------
     def close(self):
@@ -168,6 +188,9 @@ class py4d_cursor(object):
 
         if self.__closed:
             raise InterfaceError("cursor already closed.")
+
+        if self.connection.read_only and not query.lstrip()[:6].upper() == "SELECT":
+            raise NotSupportedError("Connection is read-only; only SELECT statements are allowed")
 
         # See if we are using named parameters. If so, break them out (we always need qmark style in the end)
         if isinstance(params, dict):
@@ -245,7 +268,10 @@ class py4d_cursor(object):
             fourd_type = fourdtypes[param_type]
             manual_clear = False
 
-            if param_type == str:
+            if parameter is None:
+                # NULL parameter: fourd_bind_param marks it null when val is NULL
+                param = ffi.NULL
+            elif param_type == str:
                 # Very similar to the default, but we don't have to call string on the parameter
                 param = self.lib4d_sql.fourd_create_string(parameter.encode('UTF-16LE'),
                                                            len(parameter))
@@ -256,8 +282,6 @@ class py4d_cursor(object):
                 param = ffi.new("FOURD_LONG *", parameter)
             elif param_type == float:
                 param = ffi.new("FOURD_REAL *", parameter)
-            elif param_type == None:
-                param = ffi.NULL
             elif param_type == time:
                 #almost the same as calling str(), but without milliseconds
                 itemstr = parameter.strftime('%H:%M:%S')
@@ -304,10 +328,17 @@ class py4d_cursor(object):
         self.__resulttype = self.result.resultType
         if self.__resulttype == self.lib4d_sql.RESULT_SET:
             self.__rowcount = self.lib4d_sql.fourd_num_rows(self.result)
+            # Cache column types once; fetchone dispatches on them per row.
+            self.__coltypes = [
+                self.lib4d_sql.fourd_get_column_type(self.result, col)
+                for col in range(self.lib4d_sql.fourd_num_columns(self.result))
+            ]
         elif self.__resulttype == self.lib4d_sql.UPDATE_COUNT:
             self.__rowcount = self.lib4d_sql.fourd_affected_rows(self.fourdconn);
+            self.__coltypes = []
         else:
             self.__rowcount = -1  # __resulttype is an enum, so this shouldn't happen.
+            self.__coltypes = []
 
         self.__rownumber = -1  #not on a row yet
 
@@ -318,7 +349,8 @@ class py4d_cursor(object):
     #----------------------------------------------------------------------
     def __describe(self):
         """Populate the description object"""
-        if self.result == ffi.NULL:
+        if self.result is None or self.result == ffi.NULL:
+            self.__description = None
             return
 
         columncount = self.lib4d_sql.fourd_num_columns(self.result)
@@ -388,83 +420,75 @@ class py4d_cursor(object):
         #if self.rownumber >= self.result.row_count_sent - 1:
         #    return None  #no more results have been returned
 
-        goodrow = self.lib4d_sql.fourd_next_row(self.result)
+        lib = self.lib4d_sql
+        goodrow = lib.fourd_next_row(self.result)
         if goodrow == 0:
+            # Distinguish "end of rows" from a connection/protocol failure
+            # during a FETCH-RESULT page load.
+            if lib.fourd_errno(self.fourdconn) != 0:
+                raise OperationalError(ffi.string(lib.fourd_error(self.fourdconn)))
             return None
 
         self.__rownumber = self.result.numRow
 
-        numcols = self.lib4d_sql.fourd_num_columns(self.result)
-        strlen = ffi.new("size_t*")
-        inbuff = ffi.new("char*[1]")
+        result = self.result
+        fourd_field = lib.fourd_field
+        cast = ffi.cast
+        buffer_ = ffi.buffer
 
         row=[]
-        for col in range(numcols):
-            fieldtype=self.lib4d_sql.fourd_get_column_type(self.result,col)
-            if self.lib4d_sql.fourd_field(self.result,col)==ffi.NULL:
-                        row.append(None)
-                        continue
+        for col, fieldtype in enumerate(self.__coltypes):
+            field = fourd_field(result, col)
+            if field == ffi.NULL:
+                row.append(None)
 
-            convert_res = self.lib4d_sql.fourd_field_to_string(self.result, col, inbuff, strlen)
-            strdata = inbuff[0]
-            if convert_res == 1 and strdata != ffi.NULL:
-                output = ffi.buffer(strdata, strlen[0])[:]
-                self.lib4d_sql.Free(strdata)
-                strdata = ffi.NULL
-            else:
-                output = b''
-
-            if fieldtype==self.lib4d_sql.VK_STRING or fieldtype==self.lib4d_sql.VK_TEXT:
-                decoded_value = output.decode('UTF-16LE', errors="replace")
-                row.append(decoded_value)
-            elif fieldtype == self.lib4d_sql.VK_BOOLEAN:
-                boolval = self.lib4d_sql.fourd_field_long(self.result, col)
-                row.append(bool(boolval[0]))
-            #numerical types
-            elif fieldtype == self.lib4d_sql.VK_LONG or \
-                 fieldtype == self.lib4d_sql.VK_LONG8 or \
-                 fieldtype == self.lib4d_sql.VK_WORD:
-                intval = self.lib4d_sql.fourd_field_long(self.result, col)
-                row.append(intval[0])
-            elif fieldtype == self.lib4d_sql.VK_REAL or fieldtype == self.lib4d_sql.VK_FLOAT:
-                if output == b'':
-                    row.append(None)  # Empty output = null
+            elif fieldtype == VK_STRING or fieldtype == VK_TEXT:
+                s = cast("FOURD_STRING *", field)
+                row.append(buffer_(s.data, s.length * 2)[:].decode('UTF-16LE', errors="replace"))
+            elif fieldtype == VK_LONG:
+                row.append(cast("FOURD_LONG *", field)[0])
+            elif fieldtype == VK_LONG8:
+                row.append(cast("FOURD_LONG8 *", field)[0])
+            elif fieldtype == VK_WORD or fieldtype == VK_BYTE:
+                row.append(cast("FOURD_WORD *", field)[0])
+            elif fieldtype == VK_BOOLEAN:
+                row.append(bool(cast("FOURD_BOOLEAN *", field)[0]))
+            elif fieldtype == VK_REAL:
+                row.append(cast("FOURD_REAL *", field)[0])
+            elif fieldtype == VK_TIMESTAMP or fieldtype == VK_TIME:
+                t = cast("FOURD_TIMESTAMP *", field)
+                if t.year == 0 and t.mounth == 0 and t.day == 0:
+                    row.append(None)
                 else:
-                    row.append(float(output))
-            elif fieldtype == self.lib4d_sql.VK_TIMESTAMP:
+                    try:
+                        row.append(datetime(t.year, t.mounth, t.day)
+                                   + timedelta(milliseconds=t.milli))
+                    except (ValueError, OverflowError):
+                        row.append(None)
+            elif fieldtype == VK_DURATION:
+                ms = cast("FOURD_DURATION *", field)[0]
                 try:
-                    s = output.decode('ascii')
-                    if s == '0000/00/00 00:00:00.000':
-                        dateval = None
-                    else:
-                        dateval = datetime(int(s[:4]), int(s[5:7]),
-                                           int(s[8:10]), int(s[11:13]),
-                                           int(s[14:16]), int(s[17:19]),
-                                           int(s[20:23])*1000)
-                except Exception:
-                    dateval = None
-                row.append(dateval)
-            elif fieldtype == self.lib4d_sql.VK_DURATION:
-                longval = self.lib4d_sql.fourd_field_long(self.result, col)
-                try:
-                    durationval = timedelta(milliseconds=longval[0])
-                    midnight = datetime(1, 1, 1)
-                    timeval = midnight + durationval
-                    row.append(timeval.time())
+                    row.append((datetime(1, 1, 1) + timedelta(milliseconds=ms)).time())
                 except (OverflowError, ValueError):
                     row.append(None)
-            elif fieldtype == self.lib4d_sql.VK_BLOB or fieldtype == self.lib4d_sql.VK_IMAGE:
-                field = self.lib4d_sql.fourd_field(self.result, col)
-                if field != ffi.NULL:
-                    # Use cast to let the system know this is a BLOB type field
-                    field = ffi.cast("FOURD_BLOB *", field)
-                    fieldlen = field.length
-                    fielddata = ffi.buffer(field.data, fieldlen)[:]
-                    blobbuff = Binary(fielddata)
-                    row.append(blobbuff)
-                else:
-                    row.append(None)
+            elif fieldtype == VK_BLOB or fieldtype == VK_IMAGE:
+                blob = cast("FOURD_BLOB *", field)
+                row.append(Binary(buffer_(blob.data, blob.length)[:]))
+            elif fieldtype == VK_FLOAT:
+                # 4D FLOAT (arbitrary-precision) is not decoded by the C
+                # layer; historically this driver returned None for it.
+                row.append(None)
             else:
+                # Unknown type: fall back to the C string conversion.
+                strlen = ffi.new("size_t*")
+                inbuff = ffi.new("char*[1]")
+                convert_res = lib.fourd_field_to_string(result, col, inbuff, strlen)
+                strdata = inbuff[0]
+                if convert_res == 1 and strdata != ffi.NULL:
+                    output = buffer_(strdata, strlen[0])[:]
+                    lib.Free(strdata)
+                else:
+                    output = b''
                 row.append(output)
 
         return tuple(row)
@@ -553,8 +577,11 @@ class py4d_connection:
     in_transaction = False
 
     #----------------------------------------------------------------------
-    def __init__(self, host, user, password, database, port):
+    def __init__(self, host, user, password, database, port,
+                 read_only=False, pagesize=1000):
         """Initalize a connection object and connect to a server"""
+        self.read_only = read_only
+        self.pagesize = pagesize
         self.connptr = lib4d_sql.fourd_init()
         self.cursors = []
         if self.connptr == ffi.NULL:
@@ -576,6 +603,8 @@ class py4d_connection:
     #----------------------------------------------------------------------
     def __start_transaction__(self):
         """"""
+        if self.read_only:
+            return  # read-only connections never open transactions
         if self.in_transaction:
             return  # already in transaction, don't do anything
         self.in_transaction = True
@@ -643,7 +672,17 @@ class py4d_connection:
 
 
 #----------------------------------------------------------------------
-def connect(dsn=None, user=None, password=None, host=None, database=None, port=None):
+def connect(dsn=None, user=None, password=None, host=None, database=None, port=None,
+            read_only=False, pagesize=1000):
+    """Open a connection to a 4D server.
+
+    read_only: when True, the connection never opens implicit transactions
+               (one less round trip per first query) and rejects any
+               statement that is not a SELECT.
+    pagesize:  default number of rows fetched per server round trip for
+               cursors created on this connection (cursor.execute's
+               pagesize argument overrides it per query).
+    """
     connect_args = {}
 
     # Make an argument dict based off of the arguments passed.
@@ -688,6 +727,9 @@ def connect(dsn=None, user=None, password=None, host=None, database=None, port=N
     for key in ['user', 'password', 'database']:
         if key not in connect_args:
             connect_args[key] = ""  # use an empty string if the argument is not provided. For example, if you don't need a user and password to log in.
+
+    connect_args['read_only'] = read_only
+    connect_args['pagesize'] = int(pagesize)
 
     # Try to connect to the database
     fourd_connection = py4d_connection(**connect_args)

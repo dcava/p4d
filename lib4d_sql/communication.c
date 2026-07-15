@@ -39,18 +39,74 @@
 #include <fcntl.h>
 #endif
 
-long frecv(SOCKET s,unsigned char *buf,int len,int flags)
+/* Refill the connection read buffer with whatever the socket has.
+   Returns the number of bytes read, or -1 on error/close. */
+static long rbuf_fill(FOURD *cnx)
 {
-	int rec=0;
-	long iResult=0;
-	do{
-		iResult=recv(s,buf+rec,len-rec, 0);
-		if(iResult<=0){
-			return (iResult==0) ? -1 : iResult;
+	long r;
+	cnx->rbuf_pos=0;
+	cnx->rbuf_len=0;
+	r=recv(cnx->socket,(char*)cnx->rbuf,cnx->rbuf_size,0);
+	if(r<=0){
+		return -1;
+	}
+	cnx->rbuf_len=(unsigned int)r;
+	return r;
+}
+
+/* Read exactly len bytes through the connection buffer.
+   Returns 0 on success, -1 on error/close (connection unusable). */
+static int buf_recv(FOURD *cnx,void *dst,size_t len)
+{
+	unsigned char *out=dst;
+	size_t copied=0;
+	while(copied<len){
+		size_t avail=cnx->rbuf_len-cnx->rbuf_pos;
+		if(avail==0){
+			size_t remaining=len-copied;
+			if(remaining>=cnx->rbuf_size){
+				/* large read (blob/string body): receive straight into dst */
+				size_t chunk=remaining>0x40000000?0x40000000:remaining;
+				long r=recv(cnx->socket,(char*)out+copied,(int)chunk,0);
+				if(r<=0){
+					return -1;
+				}
+				copied+=(size_t)r;
+				continue;
+			}
+			if(rbuf_fill(cnx)<0){
+				return -1;
+			}
+			continue;
 		}
-		rec+=iResult;
-	}while(rec<len);
-	return rec;
+		{
+			size_t take=(avail<len-copied)?avail:len-copied;
+			memcpy(out+copied,cnx->rbuf+cnx->rbuf_pos,take);
+			cnx->rbuf_pos+=(unsigned int)take;
+			copied+=take;
+		}
+	}
+	return 0;
+}
+
+/* Record a connection-level read failure on both the result and the cnx. */
+static int read_failed(FOURD *cnx,FOURD_RESULT *state)
+{
+	if(state!=NULL){
+		state->status=FOURD_ERROR;
+		if(state->error_code==0){
+			state->error_code=-1;
+			sprintf_s(state->error_string,ERROR_STRING_LENGTH,"Connection lost while reading from server");
+		}
+		cnx->error_code=state->error_code;
+		strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,state->error_string,ERROR_STRING_LENGTH);
+	}
+	else if(cnx->error_code==0){
+		cnx->error_code=-1;
+		sprintf_s(cnx->error_string,ERROR_STRING_LENGTH,"Connection lost while reading from server");
+	}
+	cnx->status=FOURD_ERROR;
+	return 1;
 }
 
 int socket_connect(FOURD *cnx,const char *host,unsigned int port)
@@ -137,6 +193,10 @@ int socket_connect(FOURD *cnx,const char *host,unsigned int port)
 	}
 	//Printf("fin de la fonction\n");
 
+	/* discard any stale buffered bytes from a previous connection */
+	cnx->rbuf_pos=0;
+	cnx->rbuf_len=0;
+
 	return 0;
 }
 
@@ -157,319 +217,323 @@ void socket_disconnect(FOURD *cnx)
 	//Printf("Disconnect ok\n");
 }
 
-int socket_send(FOURD *cnx,const char*msg)
+/* Send exactly len bytes, handling partial sends. 0 on success, 1 on error. */
+static int send_all(FOURD *cnx,const char *buf,size_t len)
 {
-	long iResult;
-	//Printf("Send-len:%d\n",strlen(msg))
-	Printf("Send:\n%s",msg);
-	// Send an initial buffer
-	iResult = send( cnx->socket, msg, (int)strlen(msg), 0 );
-	if (iResult == SOCKET_ERROR) {
-		Printf("send failed: %d\n", WSAGetLastError());
-		socket_disconnect(cnx);
-		return 1;
+	size_t sent=0;
+	while(sent<len){
+		size_t chunk=len-sent;
+		long iResult;
+		if(chunk>0x40000000)
+			chunk=0x40000000;
+		iResult=send(cnx->socket,buf+sent,(int)chunk,0);
+		if(iResult==SOCKET_ERROR || iResult<0){
+			Printf("send failed: %d\n", WSAGetLastError());
+			cnx->error_code=-1;
+			strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,"Connection lost while sending to server",ERROR_STRING_LENGTH);
+			socket_disconnect(cnx);
+			return 1;
+		}
+		sent+=(size_t)iResult;
 	}
 	return 0;
 }
+
+int socket_send(FOURD *cnx,const char*msg)
+{
+	Printf("Send:\n%s",msg);
+	return send_all(cnx,msg,strlen(msg));
+}
 int socket_send_data(FOURD *cnx,const char*msg,int len)
 {
-	long iResult;
 	Printf("Send:%d bytes\n",len);
 	PrintData(msg,len);
 	Printf("\n");
-	// Send an initial buffer
-	iResult = send( cnx->socket, msg, len, 0 );
-	if (iResult == SOCKET_ERROR) {
-		Printf("send failed: %d\n", WSAGetLastError());
-		socket_disconnect(cnx);
+	if(len<0)
 		return 1;
-	}
-	return 0;
+	return send_all(cnx,msg,(size_t)len);
 }
 
 int socket_receiv_header(FOURD *cnx,FOURD_RESULT *state)
 {
-	long iResult=0;
-	int len=0;
-	int crlf=0;
-	int grow_size=1024; //1K
-	int new_size=grow_size;
-	unsigned char byte;
-	char tail[4]={0,0,0,0}; /* sliding window for \r\n\r\n detection */
+	unsigned int len=0;
+	unsigned int size=4096;
+	char *hdr=NULL;
 
-	//allocate some space to start with
-	state->header=calloc(sizeof(char),new_size);
+	state->header=NULL;
+	state->header_size=0;
 
-	/* Read one byte at a time so we stop exactly at \r\n\r\n and never
-	   consume body bytes that socket_receiv_data must read from the socket. */
-	while (!crlf)
-	{
-		iResult = recv(cnx->socket,&byte,1,0);
-		if (iResult <= 0) {
-			Printf("Error: recv failed or connection closed (%ld)\n", iResult);
-			return 1;
-		}
-		if (len >= new_size - 5) {
-			new_size += grow_size;
-			state->header=realloc(state->header,new_size);
-		}
-		state->header[len]=(char)byte;
-		len++;
-		tail[0]=tail[1]; tail[1]=tail[2]; tail[2]=tail[3]; tail[3]=(char)byte;
-		if (len >= 4 && memcmp(tail,"\r\n\r\n",4)==0)
-			crlf=1;
+	hdr=malloc(size);
+	if(hdr==NULL){
+		cnx->error_code=-1;
+		strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,"Out of memory reading response header",ERROR_STRING_LENGTH);
+		return 1;
 	}
 
-	state->header[len]=0;
+	/* Consume from the connection buffer until \r\n\r\n; any bytes past the
+	   terminator stay buffered for socket_receiv_data. */
+	for(;;){
+		if(cnx->rbuf_pos>=cnx->rbuf_len){
+			if(rbuf_fill(cnx)<0){
+				free(hdr);
+				return read_failed(cnx,NULL);
+			}
+		}
+		if(len+2>size){
+			char *tmp=NULL;
+			if(size>=FOURD_MAX_HEADER_SIZE){
+				free(hdr);
+				cnx->error_code=-1;
+				strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,"Response header exceeds maximum size",ERROR_STRING_LENGTH);
+				return 1;
+			}
+			size*=2;
+			tmp=realloc(hdr,size);
+			if(tmp==NULL){
+				free(hdr);
+				cnx->error_code=-1;
+				strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,"Out of memory reading response header",ERROR_STRING_LENGTH);
+				return 1;
+			}
+			hdr=tmp;
+		}
+		hdr[len++]=(char)cnx->rbuf[cnx->rbuf_pos++];
+		if(len>=4 && memcmp(hdr+len-4,"\r\n\r\n",4)==0)
+			break;
+	}
+
+	hdr[len]=0;
+	state->header=hdr;
 	state->header_size=len;
 	Printf("Receiv:\n%s",state->header);
 	return 0;
 }
+/* Record a malformed-stream error. The stream position is lost, so the
+   connection must not be reused for further commands on this statement. */
+static int proto_failed(FOURD *cnx,FOURD_RESULT *state,const char *what,unsigned int row,unsigned int col)
+{
+	state->status=FOURD_ERROR;
+	if(state->error_code==0)
+		state->error_code=-1;
+	sprintf_s(state->error_string,ERROR_STRING_LENGTH,"%s at row %u column %u",what,row+1,col+1);
+	cnx->error_code=state->error_code;
+	strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,state->error_string,ERROR_STRING_LENGTH);
+	cnx->status=FOURD_ERROR;
+	return 1;
+}
+static int oom_failed(FOURD *cnx,FOURD_RESULT *state)
+{
+	state->status=FOURD_ERROR;
+	state->error_code=-1;
+	sprintf_s(state->error_string,ERROR_STRING_LENGTH,"Out of memory reading result data");
+	cnx->error_code=state->error_code;
+	strncpy_s(cnx->error_string,ERROR_STRING_LENGTH,state->error_string,ERROR_STRING_LENGTH);
+	cnx->status=FOURD_ERROR;
+	return 1;
+}
+
 int socket_receiv_data(FOURD *cnx,FOURD_RESULT *state)
 {
-	long iResult=0;
-	int len=0;
-	//int end_row=0;
 	unsigned int nbCol=state->row_type.nbColumn;
 	unsigned int nbRow=state->row_count_sent;
 	unsigned int r,c;
 	FOURD_TYPE *colType=NULL;
 	FOURD_ELEMENT *pElmt=NULL;
 	unsigned char status_code=0;
-	//int elmt_size=0;
-	int elmts_offset=0;
+	size_t elmts_offset=0;
+	int ret=0;
+
 	Printf("---Debut de socket_receiv_data\n");
-	colType=calloc(nbCol,sizeof(FOURD_TYPE));
-	//bufferize Column type
-	for(c=0;c<state->row_type.nbColumn;c++)
+	if(nbCol==0 || nbRow==0){
+		state->elmt=NULL;
+		return 0;
+	}
+	if(state->row_type.Column==NULL)
+		return proto_failed(cnx,state,"Result data received without column metadata",0,0);
+
+	colType=malloc((size_t)nbCol*sizeof(FOURD_TYPE));
+	if(colType==NULL)
+		return oom_failed(cnx,state);
+	for(c=0;c<nbCol;c++)
 		colType[c]=state->row_type.Column[c].type;
-	Printf("nbCol*nbRow:%d\n",nbCol*nbRow);
-	/* allocate nbElmt in state->elmt */
-	state->elmt=calloc(nbCol*nbRow,sizeof(FOURD_ELEMENT));
-	
-	Printf("Debut de socket_receiv_data\n");
+
+	/* calloc checks nbCol*nbRow overflow internally and returns NULL */
+	state->elmt=calloc((size_t)nbCol*(size_t)nbRow,sizeof(FOURD_ELEMENT));
+	if(state->elmt==NULL){
+		free(colType);
+		return oom_failed(cnx,state);
+	}
+
 	Printf("state->row_count:%d\t\tstate->row_count_sent:%d\n",state->row_count,state->row_count_sent);
-	Printf("NbRow to read: %d\n",nbRow);
-	/* read all row */
 	for(r=0;r<nbRow;r++)
 	{
-		/* read status_code and row_id */
-		if(state->updateability)  /* rowId is send only if row updateablisity */
+		/* read status_code and row_id (sent only for updateable rows) */
+		if(state->updateability)
 		{
-			int row_id=0;
-			status_code=0;
-			iResult = frecv(cnx->socket,&status_code,sizeof(status_code), 0);
-			//Printf("status_code for row:0x%X\n",status_code);
-			len+=iResult;
+			if(buf_recv(cnx,&status_code,1)!=0){ret=read_failed(cnx,state);goto done;}
 			switch(status_code)
 			{
 			case '0':
 				break;
 			case '1':
-				/* pElmt->elmt=calloc(vk_sizeof(colType[0]),1); */
-				iResult = frecv(cnx->socket,(unsigned char*)&row_id,sizeof(row_id), 0);
-				/* Printf("row_id:%d\n",row_id); */
-				len+=iResult;
-				break;
-			case '2':
-				Printferr("Error during reading data\n");
-				frecv(cnx->socket,(unsigned char*)&(state->error_code),sizeof(state->error_code), 0);
-				free(colType); //before returning, free coll type
-				return 1;	/* return on error */
-				break;
-			default:
-				Printferr("Status code 0x%X not supported in data at row %d column %d\n",status_code,(elmts_offset-c+1)/nbCol+1,c+1);
-				free(colType);
-				state->error_code=-1;
-				sprintf_s(state->error_string,2048,"Status code not supported",2048);
-				return 1;
+			{
+				int row_id=0;
+				if(buf_recv(cnx,&row_id,sizeof(row_id))!=0){ret=read_failed(cnx,state);goto done;}
 				break;
 			}
+			case '2':
+				buf_recv(cnx,&(state->error_code),sizeof(state->error_code));
+				ret=proto_failed(cnx,state,"Server reported error in row data",r,0);
+				goto done;
+			default:
+				ret=proto_failed(cnx,state,"Unsupported row status code",r,0);
+				goto done;
+			}
 		}
-		else {
-			Printf("Not read rowid\n");
-		}
-		
+
 		/* read all columns */
 		for(c=0;c<nbCol;c++,elmts_offset++)
 		{
 			pElmt=&(state->elmt[elmts_offset]);
 			pElmt->type=colType[c];
 
-			//read column status code
-			status_code=0;
-			iResult = frecv(cnx->socket,&status_code,1, 0);
-			Printf("status: %2X\n",status_code);
-			len+=iResult;
-			switch(status_code)
+			if(buf_recv(cnx,&status_code,1)!=0){ret=read_failed(cnx,state);goto done;}
+			if(status_code=='0'){		/* null value */
+				pElmt->null=1;
+				continue;
+			}
+			if(status_code=='2'){		/* server-side error */
+				buf_recv(cnx,&(state->error_code),sizeof(state->error_code));
+				ret=proto_failed(cnx,state,"Server reported error in column data",r,c);
+				goto done;
+			}
+			if(status_code!='1'){
+				ret=proto_failed(cnx,state,"Unsupported column status code",r,c);
+				goto done;
+			}
+			pElmt->null=0;
+			switch(colType[c])
 			{
-				case '2'://error
-					Printferr("Error during reading data\n");
-					frecv(cnx->socket,(unsigned char*)&(state->error_code),sizeof(state->error_code), 0);
-					free(colType);
-					return 1;//on sort en erreur
-					break;
-				case '0'://null value
-					Printf("Read null value\n");
-					pElmt->null=1;
-					break;
-				case '1'://value
-					pElmt->null=0;
-					switch(colType[c])
+				case VK_BOOLEAN:
+				case VK_BYTE:
+				case VK_WORD:
+				case VK_LONG:
+				case VK_LONG8:
+				case VK_REAL:
+				case VK_DURATION:
 				{
-					case VK_BOOLEAN:
-					case VK_BYTE:
-					case VK_WORD:
-					case VK_LONG:
-					case VK_LONG8:
-					case VK_REAL:
-					case VK_DURATION:
-						pElmt->pValue=calloc(1,vk_sizeof(colType[c]));
-						iResult = frecv(cnx->socket,(pElmt->pValue),vk_sizeof(colType[c]), 0);
-						len+=iResult;
-						//Printf("Long: %d\n",*((int*)pElmt->pValue));
-						break;
-					case VK_TIMESTAMP:
-					{
-						FOURD_TIMESTAMP *tmp;
-						tmp=calloc(1,sizeof(FOURD_TIMESTAMP));
-						pElmt->pValue=tmp;
-						iResult = frecv(cnx->socket,(unsigned char*)&(tmp->year),sizeof(short), 0);
-						Printf("year: %04X",tmp->year);
-						len+=iResult;
-						iResult = frecv(cnx->socket,&(tmp->mounth),sizeof(char), 0);
-						Printf("    mounth: %02X",tmp->mounth);
-						len+=iResult;
-						iResult = frecv(cnx->socket,&(tmp->day),sizeof(char), 0);
-						Printf("    day: %02X",tmp->day);
-						len+=iResult;
-						iResult = frecv(cnx->socket,(unsigned char*)&(tmp->milli),sizeof(unsigned int), 0);
-						Printf("    milli: %08X\n",tmp->milli);
-						len+=iResult;
-					}
-						break;
-					case VK_FLOAT:
-					{
-						//int exp;char sign;int data_length;void* data;
-						FOURD_FLOAT *tmp;
-						tmp=calloc(1,sizeof(FOURD_FLOAT));
-						pElmt->pValue=tmp;
-						
-						iResult = frecv(cnx->socket,(unsigned char*)&(tmp->exp),sizeof(int), 0);
-						len+=iResult;
-						iResult = frecv(cnx->socket,&(tmp->sign),sizeof(char), 0);
-						len+=iResult;
-						iResult = frecv(cnx->socket,(unsigned char*)&(tmp->data_length),sizeof(int), 0);
-						len+=iResult;
-						if (tmp->data_length > 0) {
-							tmp->data = malloc(tmp->data_length);
-							if (tmp->data == NULL) {
-								Printferr("Out of memory allocating FLOAT data\n");
-								free(colType);
-								state->error_code=-1;
-								sprintf_s(state->error_string,2048,"Out of memory allocating FLOAT",2048);
-								return 1;
-							}
-							iResult = frecv(cnx->socket,(tmp->data),tmp->data_length, 0);
-							len+=iResult;
-						}
-						
-						Printferr("Float not supported\n");
-					}
-						break;
-					case VK_STRING:
-					{
-						int data_length=0;
-						FOURD_STRING *str;
-						//read negative value of length of string
-						str=calloc(1,sizeof(FOURD_STRING));
-						pElmt->pValue=str;
-						iResult = frecv(cnx->socket,(unsigned char*)&data_length,4, 0);
-						len+=iResult;
-						Printf("String length: %08X\n",data_length);
-						data_length=-data_length;
-						str->length=data_length;
-						str->data=calloc(data_length*2+2,1);
-						if(data_length==0){	//correct read for empty string
-							str->data[0]=0;
-							str->data[1]=0;
-						}
-						else {
-							iResult = frecv(cnx->socket,(str->data),(data_length*2), 0);
-							str->data[data_length*2]=0;
-							str->data[data_length*2+1]=0;
-							len+=iResult;
-						}
-						/*
-						 {
-							int length=0;
-							char *chaine=NULL;
-							chaine=base64_encode((unsigned char*)str->data,data_length*2,&length);
-							Printf("Chaine: %s\n",chaine);
-							free(chaine);
-						 }*/
-					}
-						break;
-					case VK_IMAGE:
-						//Printferr("Image-Type not supported\n");
-						//break;
-					case VK_BLOB:
-					{
-						int data_length=0;
-						FOURD_BLOB *blob;
-						blob=calloc(1,sizeof(FOURD_BLOB));
-						pElmt->pValue=blob;
-						iResult = frecv(cnx->socket,(unsigned char*)&data_length,4, 0);
-						Printf("Blob length: %08X\n",data_length);
-						len+=iResult;
-						if(data_length < 0){
-							Printferr("Malformed BLOB length %d at row %d column %d\n",data_length,(elmts_offset-c+1)/nbCol+1,c+1);
-							free(colType);
-							state->error_code=-1;
-							sprintf_s(state->error_string,2048,"Malformed BLOB length received",2048);
-							return 1;
-						}
-						if(data_length==0){
-							blob->length=0;
-							blob->data=NULL;
-							pElmt->null=1;
-						}else{
-							blob->data=malloc(data_length);
-							if(!blob->data){
-								Printferr("Out of memory allocating %d bytes for BLOB\n",data_length);
-								free(colType);
-								state->error_code=-1;
-								sprintf_s(state->error_string,2048,"Out of memory allocating BLOB",2048);
-								return 1;
-							}
-							blob->length=data_length;
-							iResult = frecv(cnx->socket,blob->data,data_length, 0);
-							len+=iResult;
-						}
-					}
-						break;
-					default:
-						Printferr("Type not supported (%s) at row %d column %d\n",stringFromType(colType[c]),(elmts_offset-c+1)/nbCol+1,c+1);
-						break;
+					size_t sz=(size_t)vk_sizeof(colType[c]);
+					pElmt->pValue=_arena_alloc(state,sz);
+					if(pElmt->pValue==NULL){ret=oom_failed(cnx,state);goto done;}
+					if(buf_recv(cnx,pElmt->pValue,sz)!=0){ret=read_failed(cnx,state);goto done;}
+					break;
 				}
+				case VK_TIMESTAMP:
+				{
+					FOURD_TIMESTAMP *tmp=_arena_alloc(state,sizeof(FOURD_TIMESTAMP));
+					if(tmp==NULL){ret=oom_failed(cnx,state);goto done;}
+					pElmt->pValue=tmp;
+					if(buf_recv(cnx,&(tmp->year),sizeof(int16_t))!=0
+					|| buf_recv(cnx,&(tmp->mounth),1)!=0
+					|| buf_recv(cnx,&(tmp->day),1)!=0
+					|| buf_recv(cnx,&(tmp->milli),sizeof(uint32_t))!=0){
+						ret=read_failed(cnx,state);goto done;
+					}
 					break;
+				}
+				case VK_FLOAT:
+				{
+					FOURD_FLOAT *tmp=_arena_alloc(state,sizeof(FOURD_FLOAT));
+					if(tmp==NULL){ret=oom_failed(cnx,state);goto done;}
+					tmp->data=NULL;
+					pElmt->pValue=tmp;
+					if(buf_recv(cnx,&(tmp->exp),sizeof(int32_t))!=0
+					|| buf_recv(cnx,&(tmp->sign),1)!=0
+					|| buf_recv(cnx,&(tmp->data_length),sizeof(int32_t))!=0){
+						ret=read_failed(cnx,state);goto done;
+					}
+					if(tmp->data_length<0 || tmp->data_length>FOURD_MAX_FLOAT_BYTES){
+						ret=proto_failed(cnx,state,"Malformed FLOAT length received",r,c);
+						goto done;
+					}
+					if(tmp->data_length>0){
+						tmp->data=_arena_alloc(state,(size_t)tmp->data_length);
+						if(tmp->data==NULL){ret=oom_failed(cnx,state);goto done;}
+						if(buf_recv(cnx,tmp->data,(size_t)tmp->data_length)!=0){ret=read_failed(cnx,state);goto done;}
+					}
+					break;
+				}
+				case VK_STRING:
+				{
+					int32_t data_length=0;
+					FOURD_STRING *str=_arena_alloc(state,sizeof(FOURD_STRING));
+					if(str==NULL){ret=oom_failed(cnx,state);goto done;}
+					pElmt->pValue=str;
+					if(buf_recv(cnx,&data_length,4)!=0){ret=read_failed(cnx,state);goto done;}
+					/* string lengths arrive negated (UTF-16 char count) */
+					if(data_length>0 || data_length==INT32_MIN){
+						ret=proto_failed(cnx,state,"Malformed string length received",r,c);
+						goto done;
+					}
+					data_length=-data_length;
+					if(data_length>FOURD_MAX_STRING_CHARS){
+						ret=proto_failed(cnx,state,"String length exceeds maximum",r,c);
+						goto done;
+					}
+					str->length=data_length;
+					str->data=_arena_alloc(state,(size_t)data_length*2+2);
+					if(str->data==NULL){ret=oom_failed(cnx,state);goto done;}
+					if(data_length>0
+					&& buf_recv(cnx,str->data,(size_t)data_length*2)!=0){
+						ret=read_failed(cnx,state);goto done;
+					}
+					str->data[(size_t)data_length*2]=0;
+					str->data[(size_t)data_length*2+1]=0;
+					break;
+				}
+				case VK_IMAGE:
+				case VK_BLOB:
+				{
+					int32_t data_length=0;
+					FOURD_BLOB *blob=_arena_alloc(state,sizeof(FOURD_BLOB));
+					if(blob==NULL){ret=oom_failed(cnx,state);goto done;}
+					pElmt->pValue=blob;
+					if(buf_recv(cnx,&data_length,4)!=0){ret=read_failed(cnx,state);goto done;}
+					if(data_length<0 || data_length>FOURD_MAX_BLOB_BYTES){
+						ret=proto_failed(cnx,state,"Malformed BLOB length received",r,c);
+						goto done;
+					}
+					if(data_length==0){
+						blob->length=0;
+						blob->data=NULL;
+						pElmt->null=1;
+					}else{
+						blob->data=_arena_alloc(state,(size_t)data_length);
+						if(blob->data==NULL){ret=oom_failed(cnx,state);goto done;}
+						blob->length=data_length;
+						if(buf_recv(cnx,blob->data,(size_t)data_length)!=0){ret=read_failed(cnx,state);goto done;}
+					}
+					break;
+				}
 				default:
-					Printferr("Status code 0x%X not supported in data at row %d column %d\n",status_code,(elmts_offset-c+1)/nbCol+1,c+1);
-					break;
+					/* unknown wire type: its size is unknown, the stream
+					   cannot be resynchronised — abort instead of desyncing */
+					ret=proto_failed(cnx,state,"Unsupported column type in result data",r,c);
+					goto done;
 			}
 		}
 	}
 	Printf("---Fin de socket_receiv_data\n");
+done:
 	free(colType);
-	return 0;
+	return ret;
 }
 int socket_receiv_update_count(FOURD *cnx,FOURD_RESULT *state)
 {
 	FOURD_LONG8 data=0;
-	frecv(cnx->socket,(unsigned char*)&data,8, 0);
-	Printf("Ox%X\n",data);
+	if(buf_recv(cnx,&data,8)!=0)
+		return read_failed(cnx,state);
 	cnx->updated_row=data;
-	Printf("\n");
 
 	return 0;
 }
@@ -636,6 +700,10 @@ int socket_connect_timeout(FOURD *cnx,const char *host,unsigned int port,int tim
 		return 1;
 	}
 	/* Printf("fin de la fonction\n"); */
+
+	/* discard any stale buffered bytes from a previous connection */
+	cnx->rbuf_pos=0;
+	cnx->rbuf_len=0;
 
 	return 0;
 }

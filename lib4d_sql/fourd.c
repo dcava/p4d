@@ -42,10 +42,20 @@ FOURD* fourd_init()
 	int iResult=0;
 #endif
 	FOURD* cnx=calloc(1,sizeof(FOURD));
+	if(cnx==NULL)
+		return NULL;
 
 	cnx->socket = INVALID_SOCKET;
 	cnx->connected=0;
 	cnx->init=0;
+	cnx->rbuf=malloc(FOURD_RBUF_SIZE);
+	if(cnx->rbuf==NULL) {
+		free(cnx);
+		return NULL;
+	}
+	cnx->rbuf_size=FOURD_RBUF_SIZE;
+	cnx->rbuf_pos=0;
+	cnx->rbuf_len=0;
 	#ifdef WIN32
 	// Initialize Winsock
     iResult = WSAStartup(MAKEWORD(2,2), &cnx->wsaData);
@@ -117,14 +127,18 @@ void fourd_free(FOURD* cnx)
 #ifdef WIN32
 	WSACleanup();
 #endif
+	if (cnx==NULL) {
+		return;
+	}
 	if (cnx->preferred_image_types!=NULL){
 		free(cnx->preferred_image_types);
 		cnx->preferred_image_types=NULL;
 	}
-
-	if (cnx!=NULL) {
-		free(cnx);
+	if (cnx->rbuf!=NULL){
+		free(cnx->rbuf);
+		cnx->rbuf=NULL;
 	}
+	free(cnx);
 }
 
 
@@ -166,10 +180,11 @@ void fourd_free_result(FOURD_RESULT *res)
 	if(res!=NULL){
 		if(res->elmt!=NULL)
 			_free_data_result(res);
-		
+		_arena_free(res);	/* no-op when already freed */
+
 		if(res->header!=NULL)
 			Free(res->header);
-		
+
 		Free(res->row_type.Column);
 		Free(res);
 	}
@@ -284,7 +299,7 @@ int fourd_field_to_string(FOURD_RESULT *res,unsigned int numCol,char **value,siz
 		case VK_BOOLEAN:
 			{
 				*value=calloc(2,sizeof(char));
-				sprintf_s(*value,2,"%s",(*((FOURD_BOOLEAN *)elmt->pValue)==0?"1":"0"));
+				sprintf_s(*value,2,"%s",(*((FOURD_BOOLEAN *)elmt->pValue)==0?"0":"1"));
 				*len=strlen(*value);
 				return 1;
 			}
@@ -340,12 +355,14 @@ int fourd_field_to_string(FOURD_RESULT *res,unsigned int numCol,char **value,siz
 		case VK_STRING:
 			{
 				FOURD_STRING *str=elmt->pValue;
-				int size=0;
-				*value=NULL;
-				size=str->length;
-				*value=calloc(size,2);	/*2 bytes per char*/
-				memcpy(*value,str->data,str->length*2);
-				*len=str->length*2;
+				size_t size=(size_t)str->length;
+				*value=calloc(size*2+2,1);	/*2 bytes per char + terminator*/
+				if(*value==NULL) {
+					*len=0;
+					return 0;
+				}
+				memcpy(*value,str->data,size*2);
+				*len=size*2;
 				return 1;
 			}
 		case VK_BLOB:

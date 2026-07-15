@@ -32,6 +32,7 @@ def _make_mock_lib():
         "RESULT_SET", "UPDATE_COUNT",
     ):
         setattr(m, name, getattr(_lib, name))
+    m.fourd_errno.return_value = 0
     return m
 
 
@@ -53,6 +54,7 @@ def _setup_single_column_row(cursor, col_type, field_ptr):
     cursor._py4d_cursor__resulttype = lib.RESULT_SET
     cursor._py4d_cursor__rowcount = 1
     cursor._py4d_cursor__rownumber = -1
+    cursor._py4d_cursor__coltypes = [col_type]  # execute() caches these
     mock_result = MagicMock()
     mock_result.numRow = 0
     cursor.result = mock_result

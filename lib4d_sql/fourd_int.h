@@ -41,6 +41,16 @@
 #define Printferr(...) ((void)0)
 #endif
 
+/**********************************/
+/* wire-format sanity limits      */
+/**********************************/
+#define FOURD_RBUF_SIZE 65536              /* socket read buffer */
+#define FOURD_MAX_HEADER_SIZE (1<<20)      /* 1MB response header cap */
+#define FOURD_MAX_STRING_CHARS 0x0FFFFFFF  /* ~268M UTF-16 chars */
+#define FOURD_MAX_BLOB_BYTES  0x40000000   /* 1GB */
+#define FOURD_MAX_FLOAT_BYTES (1<<20)      /* 1MB FLOAT mantissa */
+#define FOURD_MAX_COLUMNS 32767
+
 /*******************/
 /* communication.c */
 /*******************/
@@ -83,6 +93,9 @@ int _valid_query(FOURD *cnx,const char *request);
 /*********************/
 /* Memory Allocation */
 /*********************/
+/* per-result arena: all cell values are bump-allocated and freed in one pass */
+void *_arena_alloc(FOURD_RESULT *res,size_t size);
+void _arena_free(FOURD_RESULT *res);
 void *_copy(FOURD_TYPE type,void *org);
 char *_serialize(char *data,unsigned int *size, FOURD_TYPE type, void *pObj);
 void Free(void *p);
