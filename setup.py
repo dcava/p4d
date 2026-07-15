@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     zip_safe=False,
     name="p4d",
-    version="2.1",
+    version="2.2",
     install_requires=["cffi", "python-dateutil"],
     setup_requires=["cffi", "python-dateutil"],
     cffi_modules=["p4d/_build_ffi.py:ffi"],

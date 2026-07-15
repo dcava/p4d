@@ -72,13 +72,36 @@ cur.execute("SELECT * FROM T WHERE Id = %(id)s", {"id": 42}) # pyformat
 cur.execute("SELECT * FROM T WHERE Id = :id", {"id": 42})    # named
 ```
 
+### Read-only connections
+
+For analytics/reporting workloads, open the connection read-only:
+
+```python
+conn = p4d.connect(host="...", user="...", password="...", read_only=True)
+```
+
+A read-only connection never opens implicit transactions (saving a round
+trip on the first query) and raises `NotSupportedError` for any statement
+that is not a `SELECT`, so it cannot hold write locks on the server.
+
 ### Pagination
 
-For large result sets, set `cursor.pagesize` before executing:
+Rows are fetched from the server in pages. The default page size is 1000
+rows; tune it per connection or per query:
+
+```python
+conn = p4d.connect(host="...", pagesize=5000)          # connection default
+cur.execute("SELECT * FROM BigTable", pagesize=5000)   # per query
+```
+
+Larger pages mean fewer server round trips (each FETCH-RESULT round trip
+has substantial fixed cost on the 4D server) at the cost of more client
+memory per page. As of v2.2 the page size is honoured for *every* page,
+not just the first; keep it modest for tables with large BLOB columns.
 
 ```python
 cur = conn.cursor()
-cur.pagesize = 1000
+cur.pagesize = 5000
 cur.execute("SELECT * FROM BigTable")
 while True:
     rows = cur.fetchmany(1000)
@@ -141,6 +164,49 @@ The bundled `lib4d_sql` C library is copyright © 2009 4D SAS, offered under you
 ---
 
 ## Changelog
+
+### v2.2 (2026-07)
+
+Performance and robustness overhaul of the wire protocol layer and fetch path.
+Measured against a real 4D server over a WireGuard link (5,000 rows × 136
+columns): fetch throughput went from ~350 to ~1,900 rows/s and the
+integration suite from 25s to 4s.
+
+**Performance**
+- `lib4d_sql`: new 64 KB buffered socket reader. Headers and row data were
+  previously read with one `recv()` syscall per byte/field (millions of
+  syscalls for large result sets); reads now come out of a buffer refilled
+  in bulk, and large BLOB/string bodies are received directly into their
+  destination.
+- `lib4d_sql`: per-result arena allocator. Cell values were individually
+  `calloc`'d and `free`'d (one pair per cell); they are now bump-allocated
+  from 256 KB arena chunks and freed in one pass with the result.
+- `cursor.pagesize` is now honoured for every FETCH-RESULT page (previously
+  hardcoded to 100 rows after the first page), and the default page size is
+  1000. `connect(pagesize=...)` sets the connection-wide default.
+- Python fetch path: column types are cached once per execute; each cell is
+  decoded with a single FFI call and a direct typed cast. The old path
+  converted every cell to a C string first (even integers) and made ~6 FFI
+  calls per cell.
+- `connect(read_only=True)` skips implicit `START TRANSACTION` (one less
+  round trip on first query).
+
+**Robustness**
+- Every socket read/write is now checked; a connection drop mid-result
+  raises `OperationalError` instead of silently returning truncated rows.
+- Wire-format validation: string/BLOB/FLOAT lengths are bounds-checked with
+  overflow-safe arithmetic (a corrupt length previously drove a negative
+  `calloc` and crashed); unknown column types abort cleanly instead of
+  desynchronising the stream; `Column-Count` and row counts are validated.
+- `read_only=True` rejects non-SELECT statements with `NotSupportedError`.
+- Fixed inverted boolean in `fourd_field_to_string`.
+- Fixed `fourd_field_long` misuse for 2-byte WORD/BYTE columns (read 4 bytes
+  from a 2-byte allocation) and 8-byte DURATION columns (read only 4 bytes).
+- Fixed `None` query parameters being sent as the string `"None"` instead
+  of SQL NULL.
+- Fixed memory leaks: response header + column metadata leaked on every
+  FETCH-RESULT page; several error paths leaked the result set.
+- `executemany()` no longer crashes when describing a freed result.
 
 ### v2.1 (2026-06)
 
