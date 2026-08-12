@@ -42,7 +42,7 @@ typedef double FOURD_REAL;
 typedef struct{int exp;unsigned char sign;int data_length;void* data;}FOURD_FLOAT;
 typedef struct{short year;unsigned char mounth;unsigned char day;unsigned int milli;}FOURD_TIMESTAMP;
 typedef long long FOURD_DURATION;//in milliseconds
-typedef struct{int length;char *data;}FOURD_STRING;
+typedef struct{int length;unsigned char *data;}FOURD_STRING;
 typedef struct{int length;void *data;}FOURD_BLOB;
 typedef struct{
 	FOURD_TYPE type;

@@ -165,6 +165,16 @@ The bundled `lib4d_sql` C library is copyright © 2009 4D SAS, offered under you
 
 ## Changelog
 
+### v2.2.1 (2026-07)
+
+Build fix: `FOURD_STRING.data` is declared `unsigned char *` in the bundled
+`lib4d_sql/fourd.h`, but the cffi cdef (`p4d/py_fourd.h`) said `char *`.
+cffi's generated struct-field type check then compiled with an
+incompatible-pointer-type assignment, which GCC 14 raises to a hard error,
+failing installs on Debian trixie / python:3.12-slim images. The cdef now
+matches the real header, so the extension builds without a `CFLAGS`
+workaround.
+
 ### v2.2 (2026-07)
 
 Performance and robustness overhaul of the wire protocol layer and fetch path.
